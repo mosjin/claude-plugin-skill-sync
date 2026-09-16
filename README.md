@@ -135,13 +135,49 @@ python plugin_manager.py uninstall caveman -y --prune
 python plugin_manager.py remove caveman -y
 ```
 
+### save / merge / upload / fetch / apply
+
+Save a desensitized snapshot of installed plugins and skills, merge
+snapshots from multiple machines into one drift view, and (optionally)
+install whatever's missing on a given machine.
+
+```bash
+# Save a snapshot of this machine (identity/machine are required labels,
+# never a raw email or hostname — see --help for why)
+python plugin_manager.py save --identity mosjin --machine work-laptop
+
+# Default dir is ./snapshots (gitignored, local to this machine only).
+# Point --dir at a private repo/cloud-sync folder you control to sync it
+# across machines yourself, or use upload/fetch below instead.
+python plugin_manager.py save --identity mosjin --machine work-laptop --dir /path/to/synced/dir
+
+# Merge every snapshot in a directory into one per-machine drift view
+python plugin_manager.py merge --dir /path/to/synced/dir
+
+# Also write the merged view to a file (for `apply` later)
+python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
+
+# Sync via a GitHub Gist instead of your own transport (reuses `gh` auth).
+# First upload creates a secret gist and caches its id next to the
+# snapshot dir; later uploads/fetches in that dir reuse it automatically.
+python plugin_manager.py upload snapshots/<file>.json
+python plugin_manager.py fetch --gist-id <id>
+
+# Install on this machine whatever the merged view shows is missing here.
+# Dry-run by default; -y (plus --scope) actually installs. Only plugins
+# whose marketplace is already added on this machine are installable —
+# others are listed and skipped, never guessed at.
+python plugin_manager.py apply merged.json --all -y --scope user
+python plugin_manager.py apply merged.json --lang zh   # 中文提示
+```
+
 ## Tests
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-36 tests, all subprocess calls mocked — no real plugins are modified during testing.
+170 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 
