@@ -75,7 +75,8 @@ def update_one(plugin: dict) -> dict:
     before/after version diff, not by guessing at stdout wording.
     """
     pid = plugin["id"]
-    code, out, err = run_claude(["plugin", "update", pid])
+    scope = plugin.get("scope", "user")
+    code, out, err = run_claude(["plugin", "update", pid, "-s", scope])
     return {"id": pid, "code": code, "message": (out + err).strip()}
 
 
@@ -210,7 +211,8 @@ def cmd_update(args) -> None:
 def uninstall_one(plugin: dict, keep_data: bool = False, prune: bool = False) -> dict:
     """Uninstall a single plugin. Returns result dict with status key."""
     pid = plugin["id"]
-    cli_args = ["plugin", "uninstall", pid]
+    scope = plugin.get("scope", "user")
+    cli_args = ["plugin", "uninstall", pid, "-s", scope]
     if keep_data:
         cli_args.append("--keep-data")
     if prune:

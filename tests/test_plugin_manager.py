@@ -101,7 +101,15 @@ class TestUpdateOne(unittest.TestCase):
     def test_calls_with_full_id(self):
         with patch("plugin_manager.run_claude", return_value=(0, "updated", "")) as mock:
             plugin_manager.update_one(SAMPLE_PLUGINS[0])
-        mock.assert_called_once_with(["plugin", "update", "caveman@caveman"])
+        mock.assert_called_once_with(["plugin", "update", "caveman@caveman", "-s", "user"])
+
+    def test_passes_plugin_own_scope(self):
+        """A local/project-scope plugin must not default to -s user; the
+        CLI rejects update/uninstall at the wrong scope."""
+        local_plugin = dict(SAMPLE_PLUGINS[0], scope="local")
+        with patch("plugin_manager.run_claude", return_value=(0, "updated", "")) as mock:
+            plugin_manager.update_one(local_plugin)
+        mock.assert_called_once_with(["plugin", "update", "caveman@caveman", "-s", "local"])
 
 
 class TestResolveUpdateStatus(unittest.TestCase):
@@ -354,6 +362,16 @@ class TestUninstallOne(unittest.TestCase):
         args = mock.call_args[0][0]
         self.assertEqual(args[:2], ["plugin", "uninstall"])
         self.assertIn("caveman@caveman", args)
+
+    def test_passes_plugin_own_scope(self):
+        """A local/project-scope plugin must not default to -s user; the
+        CLI rejects uninstall at the wrong scope."""
+        local_plugin = dict(SAMPLE_PLUGINS[0], scope="local")
+        with patch("plugin_manager.run_claude", return_value=(0, "ok", "")) as mock:
+            plugin_manager.uninstall_one(local_plugin)
+        args = mock.call_args[0][0]
+        self.assertIn("-s", args)
+        self.assertEqual(args[args.index("-s") + 1], "local")
 
     def test_keep_data_flag(self):
         with patch("plugin_manager.run_claude", return_value=(0, "ok", "")) as mock:
