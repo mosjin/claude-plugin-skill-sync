@@ -1370,5 +1370,241 @@ class TestCmdFetch(unittest.TestCase):
         self.assertIn("0 snapshot(s) found", output)
 
 
+MERGED_FIXTURE = {
+    "schema_version": 1, "kind": "merged", "identity": "mosjin",
+    "machines": {
+        "linux-box@linux": {"machine": "linux-box", "platform": "linux", "captured_at": "2026-09-16"},
+    },
+    "plugins": {
+        "caveman@caveman": {"present_on": {"linux-box@linux": {"version": "1.0", "scope": "user", "enabled": True}}, "drift": []},
+        "unknown@no-such-marketplace": {"present_on": {"linux-box@linux": {"version": "1.0", "scope": "user", "enabled": True}}, "drift": []},
+    },
+    "skills": {},
+    "notes": [],
+}
+
+
+class TestMarketplaceInstallLocations(unittest.TestCase):
+    def test_parses_name_to_path(self):
+        payload = json.dumps([{"name": "caveman", "installLocation": "/home/user/.claude/plugins/marketplaces/caveman"}])
+        with patch("plugin_manager.run_claude", return_value=(0, payload, "")):
+            result = plugin_manager.marketplace_install_locations()
+        self.assertEqual(result["caveman"], Path("/home/user/.claude/plugins/marketplaces/caveman"))
+
+    def test_cli_failure_exits(self):
+        with patch("plugin_manager.run_claude", return_value=(1, "", "boom")):
+            with self.assertRaises(SystemExit):
+                plugin_manager.marketplace_install_locations()
+
+    def test_entries_missing_fields_skipped_not_crash(self):
+        payload = json.dumps([{"name": "no-location"}, {"installLocation": "/x"}])
+        with patch("plugin_manager.run_claude", return_value=(0, payload, "")):
+            result = plugin_manager.marketplace_install_locations()
+        self.assertEqual(result, {})
+
+
+class TestPluginDescription(unittest.TestCase):
+    def test_reads_description_from_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loc = Path(tmp)
+            (loc / ".claude-plugin").mkdir()
+            manifest = {"plugins": [{"name": "caveman", "description": "terse mode"}]}
+            (loc / ".claude-plugin" / "marketplace.json").write_text(json.dumps(manifest), encoding="utf-8")
+            result = plugin_manager.plugin_description("caveman@caveman", {"caveman": loc})
+        self.assertEqual(result, "terse mode")
+
+    def test_marketplace_not_available_returns_none(self):
+        self.assertIsNone(plugin_manager.plugin_description("x@unknown", {}))
+
+    def test_missing_manifest_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = plugin_manager.plugin_description("x@m", {"m": Path(tmp)})
+        self.assertIsNone(result)
+
+    def test_plugin_not_listed_in_manifest_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loc = Path(tmp)
+            (loc / ".claude-plugin").mkdir()
+            (loc / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"plugins": [{"name": "other"}]}), encoding="utf-8"
+            )
+            result = plugin_manager.plugin_description("x@m", {"m": loc})
+        self.assertIsNone(result)
+
+    def test_malformed_manifest_json_returns_none_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loc = Path(tmp)
+            (loc / ".claude-plugin").mkdir()
+            (loc / ".claude-plugin" / "marketplace.json").write_text("not json", encoding="utf-8")
+            result = plugin_manager.plugin_description("x@m", {"m": loc})
+        self.assertIsNone(result)
+
+
+class TestLoadMerged(unittest.TestCase):
+    def test_missing_file_exits(self):
+        with self.assertRaises(SystemExit):
+            plugin_manager.load_merged(Path("no/such/file.json"))
+
+    def test_wrong_kind_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "a.json"
+            p.write_text(VALID_SNAPSHOT_CONTENT, encoding="utf-8")  # kind="snapshot", not "merged"
+            with self.assertRaises(SystemExit):
+                plugin_manager.load_merged(p)
+
+    def test_valid_merged_file_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "merged.json"
+            p.write_text(json.dumps(MERGED_FIXTURE), encoding="utf-8")
+            result = plugin_manager.load_merged(p)
+        self.assertEqual(result["identity"], "mosjin")
+
+
+class TestMissingPluginIds(unittest.TestCase):
+    def test_returns_ids_not_locally_installed(self):
+        result = plugin_manager.missing_plugin_ids(MERGED_FIXTURE, {"ecc@ecc"})
+        self.assertEqual(result, ["caveman@caveman", "unknown@no-such-marketplace"])
+
+    def test_already_installed_excluded(self):
+        result = plugin_manager.missing_plugin_ids(MERGED_FIXTURE, {"caveman@caveman", "unknown@no-such-marketplace"})
+        self.assertEqual(result, [])
+
+
+class TestCmdApply(unittest.TestCase):
+    def _args(self, merged_file, plugins=None, all_=False, yes=False, scope=None, lang=None):
+        class Args:
+            pass
+        a = Args()
+        a.merged_file = merged_file
+        a.plugins = plugins or []
+        a.all = all_
+        a.yes = yes
+        a.scope = scope
+        a.lang = lang
+        return a
+
+    def _write_merged(self, tmp):
+        p = Path(tmp) / "merged.json"
+        p.write_text(json.dumps(MERGED_FIXTURE), encoding="utf-8")
+        return p
+
+    def test_nothing_missing_prints_and_returns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            with patch("plugin_manager.list_plugins", return_value=[{"id": "caveman@caveman"}, {"id": "unknown@no-such-marketplace"}]):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_apply(self._args(str(merged)))
+                    output = mock_out.getvalue()
+        self.assertIn("Nothing missing", output)
+
+    def test_dry_run_lists_installable_and_skipped_with_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            (loc / ".claude-plugin").mkdir(parents=True)
+            (loc / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"plugins": [{"name": "caveman", "description": "terse mode"}]}), encoding="utf-8"
+            )
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_apply(self._args(str(merged), all_=True))
+                        output = mock_out.getvalue()
+        self.assertIn("caveman@caveman", output)
+        self.assertIn("terse mode", output)
+        self.assertIn("unknown@no-such-marketplace", output)  # listed under skipped
+        self.assertIn("Dry run", output)
+
+    def test_yes_without_scope_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("sys.stdout", new_callable=StringIO):
+                        with self.assertRaises(SystemExit):
+                            plugin_manager.cmd_apply(self._args(str(merged), all_=True, yes=True))
+
+    def test_all_with_yes_installs_and_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", side_effect=[
+                    (0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), ""),  # marketplace list
+                    (0, "installed", ""),  # plugin install
+                ]) as mock_claude:
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_apply(self._args(str(merged), all_=True, yes=True, scope="user"))
+                        output = mock_out.getvalue()
+        install_call = mock_claude.call_args_list[-1][0][0]
+        self.assertEqual(install_call, ["plugin", "install", "caveman@caveman", "-s", "user", "-y"])
+        self.assertIn("Installed: 1", output)
+
+    def test_install_failure_counted_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", side_effect=[
+                    (0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), ""),
+                    (1, "", "install failed"),
+                ]):
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        with self.assertRaises(SystemExit):
+                            plugin_manager.cmd_apply(self._args(str(merged), all_=True, yes=True, scope="user"))
+                        output = mock_out.getvalue()
+        self.assertIn("Failed: 1", output)
+
+    def test_specific_plugin_name_not_in_installable_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("sys.stdout", new_callable=StringIO):
+                        with self.assertRaises(SystemExit):
+                            plugin_manager.cmd_apply(self._args(str(merged), plugins=["nope@nope"], yes=True, scope="user"))
+
+    def test_interactive_all_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("builtins.input", return_value="all"):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            plugin_manager.cmd_apply(self._args(str(merged)))  # no plugins/all/yes -> dry run after selection
+                            output = mock_out.getvalue()
+        self.assertIn("Dry run", output)
+
+    def test_interactive_none_selection_installs_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            loc = Path(tmp) / "mp"
+            loc.mkdir()
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("builtins.input", return_value="none"):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            plugin_manager.cmd_apply(self._args(str(merged)))
+                            output = mock_out.getvalue()
+        self.assertNotIn("Dry run", output)  # returned before reaching the dry-run note
+
+    def test_lang_zh_switches_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_merged(tmp)
+            with patch("plugin_manager.list_plugins", return_value=[{"id": "caveman@caveman"}, {"id": "unknown@no-such-marketplace"}]):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_apply(self._args(str(merged), lang="zh"))
+                    output = mock_out.getvalue()
+        self.assertIn("没有缺的插件", output)
+
+
 if __name__ == "__main__":
     unittest.main()

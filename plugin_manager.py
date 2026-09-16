@@ -10,6 +10,7 @@ Usage:
     python plugin_manager.py merge
     python plugin_manager.py upload snapshots/<file>.json
     python plugin_manager.py fetch --gist-id <id>
+    python plugin_manager.py apply merged.json --all -y --scope user
 """
 
 import argparse
@@ -840,6 +841,170 @@ def cmd_fetch(args) -> None:
             print(f"  skipped {invalid} file(s) that aren't valid `save` snapshots")
 
 
+LANG_MESSAGES = {
+    "en": {
+        "nothing_missing": "Nothing missing — every plugin in the merged snapshot is already installed here.",
+        "installable_header": "Installable (marketplace already available here):",
+        "skip_header": "Skipped (marketplace not added on this machine — add its source first):",
+        "dry_run_note": "Dry run — pass -y to actually install. Nothing was installed.",
+        "scope_required": "Error: --scope is required to actually install (user/project/local).",
+        "select_prompt": "Install which? [a]ll / [n]one / comma-separated numbers: ",
+        "installing": "Installing {id} (scope={scope})...",
+        "summary": "Installed: {ok}  Failed: {fail}",
+    },
+    "zh": {
+        "nothing_missing": "没有缺的插件 — 合并快照里的插件这台机器都已经装了。",
+        "installable_header": "可装（这台机器已有对应 marketplace）：",
+        "skip_header": "跳过（这台机器还没加这个 marketplace，先手动加源）：",
+        "dry_run_note": "预览模式，未实际安装。加 -y 才会真正安装。",
+        "scope_required": "错误：真正安装需要 --scope（user/project/local）。",
+        "select_prompt": "装哪些？[a]全部 / [n]不装 / 逗号分隔序号：",
+        "installing": "正在装 {id}（scope={scope}）...",
+        "summary": "已装：{ok}  失败：{fail}",
+    },
+}
+DEFAULT_LANG = "en"
+
+
+def _msg(lang: str, key: str, **kwargs) -> str:
+    table = LANG_MESSAGES.get(lang, LANG_MESSAGES[DEFAULT_LANG])
+    return table[key].format(**kwargs)
+
+
+def marketplace_install_locations() -> dict:
+    """name -> Path(installLocation) for every marketplace already
+    configured on this machine — `apply` can only install a plugin whose
+    marketplace is already known here (it has no other way to learn that
+    marketplace's source)."""
+    code, out, err = run_claude(["plugin", "marketplace", "list", "--json"])
+    if code != 0:
+        sys.exit(f"Error listing marketplaces: {err.strip()}")
+    locations = {}
+    for m in json.loads(out):
+        loc = m.get("installLocation")
+        if m.get("name") and loc:
+            locations[m["name"]] = Path(loc)
+    return locations
+
+
+def plugin_description(plugin_id: str, marketplaces: dict) -> Optional[str]:
+    """Read the plugin's own author-written description from its
+    marketplace's local manifest — never translated or rewritten here.
+    Returns None if the marketplace or the description isn't available.
+    """
+    name, _, marketplace = plugin_id.partition("@")
+    loc = marketplaces.get(marketplace)
+    if not loc:
+        return None
+    manifest_path = loc / ".claude-plugin" / "marketplace.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    for entry in manifest.get("plugins", []):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            return entry.get("description")
+    return None
+
+
+def load_merged(path: Path) -> dict:
+    if not path.is_file():
+        sys.exit(f"Error: merged snapshot file not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        sys.exit(f"Error reading {path}: {exc}")
+    if not isinstance(data, dict) or data.get("kind") != "merged":
+        sys.exit(f"Error: {path} is not a `merge --out` file (expected kind='merged')")
+    return data
+
+
+def missing_plugin_ids(merged: dict, installed_ids: set) -> list:
+    return sorted(pid for pid in merged["plugins"] if pid not in installed_ids)
+
+
+def cmd_apply(args) -> None:
+    lang = args.lang or DEFAULT_LANG
+    merged = load_merged(Path(args.merged_file))
+    installed_ids = {p["id"] for p in list_plugins()}
+    missing = missing_plugin_ids(merged, installed_ids)
+
+    if not missing:
+        print(_msg(lang, "nothing_missing"))
+        return
+
+    marketplaces = marketplace_install_locations()
+    installable, skipped = [], []
+    for pid in missing:
+        _, _, marketplace = pid.partition("@")
+        (installable if marketplace in marketplaces else skipped).append(pid)
+
+    if installable:
+        print(_msg(lang, "installable_header"))
+        for pid in installable:
+            where = ", ".join(sorted(merged["plugins"][pid]["present_on"]))
+            print(f"  {pid}  (on: {where})")
+            desc = plugin_description(pid, marketplaces)
+            if desc:
+                print(f"    {desc}")
+    if skipped:
+        print(_msg(lang, "skip_header"))
+        for pid in skipped:
+            print(f"  {pid}")
+
+    if not installable:
+        return
+
+    if args.all:
+        targets = installable
+    elif args.plugins:
+        targets = [p for p in args.plugins if p in installable]
+        unknown = [p for p in args.plugins if p not in installable]
+        if unknown:
+            sys.exit(f"Error: not in the installable list: {unknown}")
+    else:
+        print()
+        answer = input(_msg(lang, "select_prompt")).strip().lower()
+        if answer in ("a", "all"):
+            targets = installable
+        elif answer in ("", "n", "none"):
+            targets = []
+        else:
+            try:
+                indices = [int(x.strip()) for x in answer.split(",") if x.strip()]
+                targets = [installable[i - 1] for i in indices]
+            except (ValueError, IndexError):
+                sys.exit("Error: could not parse selection")
+
+    if not targets:
+        return
+
+    if not args.yes:
+        print()
+        print(_msg(lang, "dry_run_note"))
+        return
+
+    if not args.scope:
+        sys.exit(_msg(lang, "scope_required"))
+
+    ok = fail = 0
+    for pid in targets:
+        print(_msg(lang, "installing", id=pid, scope=args.scope))
+        code, out, err = run_claude(["plugin", "install", pid, "-s", args.scope, "-y"])
+        if code == 0:
+            ok += 1
+        else:
+            fail += 1
+            print(f"  {(out + err).strip()} (exit {code})")
+    print(_msg(lang, "summary", ok=ok, fail=fail))
+    if fail:
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="plugin_manager",
@@ -898,6 +1063,14 @@ def main() -> None:
         help=f"Local snapshot dir to copy into (default: ${ENV_SNAPSHOT_DIR} or ./{DEFAULT_SNAPSHOT_DIR})",
     )
 
+    apply_ = sub.add_parser("apply", help="Install plugins missing on this machine from a merged snapshot")
+    apply_.add_argument("merged_file", help="Path to a `merge --out` JSON file")
+    apply_.add_argument("plugins", nargs="*", metavar="plugin", help="Specific plugin id(s) to install")
+    apply_.add_argument("--all", action="store_true", help="Install everything missing")
+    apply_.add_argument("-y", "--yes", action="store_true", help="Actually install (default is dry-run preview)")
+    apply_.add_argument("--scope", choices=["user", "project", "local"], help="Install scope (required with -y)")
+    apply_.add_argument("--lang", choices=["en", "zh"], help="Language for this tool's own prompts (default: en)")
+
     args = parser.parse_args()
     if args.command == "list":
         cmd_list(args)
@@ -915,6 +1088,8 @@ def main() -> None:
         cmd_upload(args)
     elif args.command == "fetch":
         cmd_fetch(args)
+    elif args.command == "apply":
+        cmd_apply(args)
 
 
 if __name__ == "__main__":
