@@ -217,3 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .code-graph/
+
+# Local scratch files (session drafts, temp scripts) — never committed
+tmp/
+
+# Default plugin/skill snapshot dir — single-machine only, never synced via this repo
+snapshots/

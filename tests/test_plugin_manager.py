@@ -1,9 +1,12 @@
 """Tests for plugin_manager.py — all subprocess calls are mocked."""
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch, call
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
@@ -104,7 +107,7 @@ class TestUpdateOne(unittest.TestCase):
         mock.assert_called_once_with(["plugin", "update", "caveman@caveman", "-s", "user"])
 
     def test_passes_plugin_own_scope(self):
-        """A local/project-scope plugin must not default to -s user; the
+        """A local/project-scope plugin must not default to -s user — the
         CLI rejects update/uninstall at the wrong scope."""
         local_plugin = dict(SAMPLE_PLUGINS[0], scope="local")
         with patch("plugin_manager.run_claude", return_value=(0, "updated", "")) as mock:
@@ -364,7 +367,7 @@ class TestUninstallOne(unittest.TestCase):
         self.assertIn("caveman@caveman", args)
 
     def test_passes_plugin_own_scope(self):
-        """A local/project-scope plugin must not default to -s user; the
+        """A local/project-scope plugin must not default to -s user — the
         CLI rejects uninstall at the wrong scope."""
         local_plugin = dict(SAMPLE_PLUGINS[0], scope="local")
         with patch("plugin_manager.run_claude", return_value=(0, "ok", "")) as mock:
@@ -533,6 +536,582 @@ class TestCmdDoctor(unittest.TestCase):
         with patch("plugin_manager.run_claude", return_value=(1, "", "mcp list failed")):
             with self.assertRaises(SystemExit):
                 plugin_manager.cmd_doctor(None)
+
+
+SAMPLE_PLUGIN_WITH_MCP = {
+    "id": "context-mode@context-mode",
+    "version": "1.0.169",
+    "scope": "user",
+    "enabled": True,
+    "installPath": "D:\\works\\.claude\\plugins\\cache\\context-mode\\context-mode\\1.0.169",
+    "installedAt": "2026-05-06T13:19:14.661Z",
+    "lastUpdated": "2026-09-16T13:54:41.335Z",
+    "mcpServers": {
+        "context-mode": {
+            "command": "C:/nvm4w/nodejs/node.exe",
+            "args": ["D:/works/.claude/plugins/cache/context-mode/context-mode/1.0.169/start.mjs"],
+        }
+    },
+}
+
+LEAKY_PLUGIN = {
+    "id": "leaky@leaky",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": True,
+    "installPath": "C:\\Users\\mosjin\\.claude\\plugins\\cache\\leaky\\leaky\\1.0.0",
+}
+
+
+class TestSanitizeLabel(unittest.TestCase):
+    def test_lowercases_and_collapses_separators(self):
+        self.assertEqual(plugin_manager._sanitize_label("Work Laptop!!"), "work-laptop")
+
+    def test_empty_after_sanitize_exits(self):
+        with self.assertRaises(SystemExit):
+            plugin_manager._sanitize_label("###")
+
+
+class TestResolveIdentity(unittest.TestCase):
+    def _args(self, identity=None):
+        class Args:
+            pass
+        a = Args()
+        a.identity = identity
+        return a
+
+    def test_uses_flag(self):
+        self.assertEqual(plugin_manager.resolve_identity(self._args("mosjin")), "mosjin")
+
+    def test_falls_back_to_env(self):
+        with patch.dict("os.environ", {plugin_manager.ENV_IDENTITY: "envuser"}, clear=False):
+            self.assertEqual(plugin_manager.resolve_identity(self._args(None)), "envuser")
+
+    def test_missing_both_exits(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(SystemExit):
+                plugin_manager.resolve_identity(self._args(None))
+
+    def test_full_email_rejected(self):
+        """The full address must never be written into a snapshot verbatim."""
+        with self.assertRaises(SystemExit):
+            plugin_manager.resolve_identity(self._args("mosjin@gmail.com"))
+
+    def test_sanitizes_mixed_case_and_punctuation(self):
+        self.assertEqual(plugin_manager.resolve_identity(self._args("Mo Sjin!")), "mo-sjin")
+
+
+class TestResolveMachine(unittest.TestCase):
+    def _args(self, machine=None):
+        class Args:
+            pass
+        a = Args()
+        a.machine = machine
+        return a
+
+    def test_uses_flag(self):
+        self.assertEqual(plugin_manager.resolve_machine(self._args("win-desktop")), "win-desktop")
+
+    def test_falls_back_to_env(self):
+        with patch.dict("os.environ", {plugin_manager.ENV_MACHINE: "env-box"}, clear=False):
+            self.assertEqual(plugin_manager.resolve_machine(self._args(None)), "env-box")
+
+    def test_sanitizes_raw_hostname_style_input(self):
+        self.assertEqual(plugin_manager.resolve_machine(self._args("DESKTOP-4F7K2Q1")), "desktop-4f7k2q1")
+
+    def test_missing_both_exits(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(SystemExit):
+                plugin_manager.resolve_machine(self._args(None))
+
+
+class TestResolveSnapshotDir(unittest.TestCase):
+    def _args(self, dir_=None):
+        class Args:
+            pass
+        a = Args()
+        a.dir = dir_
+        return a
+
+    def test_uses_flag(self):
+        result = plugin_manager.resolve_snapshot_dir(self._args("custom/dir"))
+        self.assertEqual(result, Path("custom/dir"))
+
+    def test_falls_back_to_env(self):
+        with patch.dict("os.environ", {plugin_manager.ENV_SNAPSHOT_DIR: "env/dir"}, clear=False):
+            result = plugin_manager.resolve_snapshot_dir(self._args(None))
+        self.assertEqual(result, Path("env/dir"))
+
+    def test_falls_back_to_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = plugin_manager.resolve_snapshot_dir(self._args(None))
+        self.assertEqual(result, plugin_manager.DEFAULT_SNAPSHOT_DIR)
+
+
+class TestWhitelistPlugin(unittest.TestCase):
+    def test_keeps_only_allowed_fields(self):
+        record = plugin_manager.whitelist_plugin(SAMPLE_PLUGIN_WITH_MCP)
+        self.assertEqual(
+            set(record.keys()),
+            {"id", "version", "scope", "enabled", "mcp_server_names"},
+        )
+
+    def test_drops_install_path_value_not_just_key(self):
+        """Checking the camelCase KEY is absent isn't enough — a leak could
+        arrive under any key. Assert the actual path VALUE is gone."""
+        record = plugin_manager.whitelist_plugin(LEAKY_PLUGIN)
+        blob = json.dumps(record)
+        self.assertNotIn("installPath", blob)
+        self.assertNotIn(LEAKY_PLUGIN["installPath"], blob)
+        self.assertNotIn("mosjin", blob)
+
+    def test_drops_mcp_command_and_args(self):
+        record = plugin_manager.whitelist_plugin(SAMPLE_PLUGIN_WITH_MCP)
+        blob = json.dumps(record)
+        self.assertNotIn("D:/works", blob)
+        self.assertNotIn("node.exe", blob)
+        self.assertNotIn("command", blob)
+        self.assertNotIn("args", blob)
+
+    def test_mcp_server_names_only(self):
+        record = plugin_manager.whitelist_plugin(SAMPLE_PLUGIN_WITH_MCP)
+        self.assertEqual(record["mcp_server_names"], ["context-mode"])
+
+    def test_plugin_without_mcp_servers(self):
+        record = plugin_manager.whitelist_plugin(SAMPLE_PLUGINS[0])
+        self.assertEqual(record["mcp_server_names"], [])
+
+    def test_mcp_servers_as_list_does_not_crash(self):
+        """A future `claude plugin list --json` could change mcpServers'
+        shape — the allowlist must degrade safely, not crash `save`."""
+        plugin = dict(SAMPLE_PLUGINS[0], mcpServers=["not", "a", "dict"])
+        record = plugin_manager.whitelist_plugin(plugin)
+        self.assertEqual(record["mcp_server_names"], [])
+
+    def test_mcp_servers_as_string_does_not_crash(self):
+        plugin = dict(SAMPLE_PLUGINS[0], mcpServers="./.mcp.json")
+        record = plugin_manager.whitelist_plugin(plugin)
+        self.assertEqual(record["mcp_server_names"], [])
+
+
+class TestScanSkills(unittest.TestCase):
+    def test_finds_skill_dirs_with_skill_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "skills" / "api-design").mkdir(parents=True)
+            (root / "skills" / "api-design" / "SKILL.md").write_text("x")
+            result = plugin_manager.scan_skills(root, owner="user")
+        self.assertEqual(result, [{"name": "api-design", "owner": "user"}])
+
+    def test_ignores_dirs_without_skill_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "skills" / "not-a-skill").mkdir(parents=True)
+            result = plugin_manager.scan_skills(root, owner="user")
+        self.assertEqual(result, [])
+
+    def test_missing_skills_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = plugin_manager.scan_skills(Path(tmp), owner="user")
+        self.assertEqual(result, [])
+
+    def test_no_path_leaks_in_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "skills" / "s1").mkdir(parents=True)
+            (root / "skills" / "s1" / "SKILL.md").write_text("x")
+            result = plugin_manager.scan_skills(root, owner="user")
+        self.assertNotIn("path", result[0])
+        self.assertEqual(set(result[0].keys()), {"name", "owner"})
+
+
+class TestDiscoverSkillRoots(unittest.TestCase):
+    def test_includes_user_project_and_plugin_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            cwd = Path(tmp) / "proj"
+            home.mkdir()
+            cwd.mkdir()
+            with patch("pathlib.Path.home", return_value=home):
+                with patch("pathlib.Path.cwd", return_value=cwd):
+                    with patch.dict("os.environ", {}, clear=True):
+                        roots = plugin_manager.discover_skill_roots([SAMPLE_PLUGINS[0]])
+        owners = {owner for _, owner in roots}
+        self.assertIn("user", owners)
+        self.assertIn("project", owners)
+        self.assertIn("plugin:caveman@caveman", owners)
+
+    def test_config_dir_replaces_default_home_claude(self):
+        """CLAUDE_CONFIG_DIR replaces ~/.claude for Claude Code itself — this
+        must not scan both, or it reports skills Claude Code never loads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            custom = Path(tmp) / "custom-config"
+            home.mkdir()
+            with patch("pathlib.Path.home", return_value=home):
+                with patch("pathlib.Path.cwd", return_value=Path(tmp) / "elsewhere"):
+                    with patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(custom)}, clear=True):
+                        roots = plugin_manager.discover_skill_roots([])
+        user_roots = [r for r in roots if r[1] == "user"]
+        self.assertEqual(len(user_roots), 1)
+        self.assertEqual(user_roots[0][0], custom)
+
+    def test_dedupes_same_path_different_case(self):
+        """Windows paths that differ only in case are the same directory —
+        must not be scanned (and reported) twice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            lower = str(home / ".claude").lower()
+            upper = str(home / ".claude").upper()
+            with patch("pathlib.Path.home", return_value=home):
+                with patch("pathlib.Path.cwd", return_value=Path(tmp) / "elsewhere"):
+                    with patch.dict("os.environ", {}, clear=True):
+                        roots = plugin_manager.discover_skill_roots([
+                            {"id": "a@a", "installPath": lower},
+                            {"id": "a@a", "installPath": upper},
+                        ])
+        plugin_roots = [r for r in roots if r[1] == "plugin:a@a"]
+        expected = 1 if os.path.normcase("A") != "A" else 2
+        self.assertEqual(len(plugin_roots), expected)
+
+
+class TestCaptureSnapshot(unittest.TestCase):
+    def test_builds_full_schema(self):
+        with patch("plugin_manager.discover_skill_roots", return_value=[]):
+            snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
+        self.assertEqual(snapshot["schema_version"], plugin_manager.SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(snapshot["kind"], "snapshot")
+        self.assertEqual(snapshot["identity"], "mosjin")
+        self.assertEqual(snapshot["machine"], "win-desktop")
+        self.assertEqual(snapshot["platform"], sys.platform)
+        self.assertEqual(len(snapshot["plugins"]), 3)
+        self.assertEqual(snapshot["skills"], [])
+
+    def test_aggregates_skills_across_roots(self):
+        fake_roots = [("root-a", "user"), ("root-b", "plugin:caveman@caveman")]
+        with patch("plugin_manager.discover_skill_roots", return_value=fake_roots):
+            with patch(
+                "plugin_manager.scan_skills",
+                side_effect=[
+                    [{"name": "s1", "owner": "user"}],
+                    [{"name": "s2", "owner": "plugin:caveman@caveman"}],
+                ],
+            ):
+                snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
+        self.assertEqual(len(snapshot["skills"]), 2)
+
+
+class TestSnapshotFilename(unittest.TestCase):
+    def _snapshot(self):
+        return {"identity": "mo-sjin", "machine": "win-desktop", "platform": "win32",
+                "captured_at": "2026-09-16"}
+
+    def test_includes_identity_machine_platform_date(self):
+        name = plugin_manager.snapshot_filename(self._snapshot())
+        self.assertTrue(name.startswith("mo-sjin__win-desktop__win32__2026-09-16__"))
+        self.assertTrue(name.endswith(".json"))
+
+    def test_no_precise_time_in_filename(self):
+        """Only the coarsened date may appear — a precise time-of-day
+        would fingerprint the exact thing captured_at was coarsened to
+        hide."""
+        name = plugin_manager.snapshot_filename(self._snapshot())
+        self.assertNotRegex(name, r"\d{2}:\d{2}|T\d{6}")
+
+    def test_two_calls_produce_different_filenames(self):
+        """Same-day saves for the same machine must not collide/overwrite —
+        uniqueness comes from a random token, not a timestamp."""
+        first = plugin_manager.snapshot_filename(self._snapshot())
+        second = plugin_manager.snapshot_filename(self._snapshot())
+        self.assertNotEqual(first, second)
+
+
+class TestCmdSave(unittest.TestCase):
+    def _args(self, identity="mosjin", machine="win-desktop", dir_=None):
+        class Args:
+            pass
+        a = Args()
+        a.identity = identity
+        a.machine = machine
+        a.dir = dir_
+        return a
+
+    def test_writes_snapshot_file_to_custom_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
+                with patch("plugin_manager.discover_skill_roots", return_value=[]):
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
+            files = list(out_dir.glob("*.json"))
+            self.assertEqual(len(files), 1)
+            data = json.loads(files[0].read_text(encoding="utf-8"))
+            self.assertEqual(data["identity"], "mosjin")
+            self.assertEqual(len(data["plugins"]), 3)
+
+    def test_no_sync_warning_only_on_default_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
+                with patch("plugin_manager.discover_skill_roots", return_value=[]):
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
+                    output = mock_out.getvalue()
+        self.assertNotIn("Warning", output)
+
+    def test_warns_when_using_default_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
+                    with patch("plugin_manager.discover_skill_roots", return_value=[]):
+                        with patch.dict("os.environ", {}, clear=True):
+                            with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                                plugin_manager.cmd_save(self._args(dir_=None))
+                            output = mock_out.getvalue()
+            finally:
+                os.chdir(cwd)
+        self.assertIn("Warning", output)
+        self.assertIn("local to this machine only", output)
+
+    def test_leaky_install_path_never_hits_disk(self):
+        """T2: the on-disk artifact itself must be clean, not just the
+        in-memory record — this is the end-to-end guard for the feature's
+        entire threat model."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            with patch("plugin_manager.list_plugins", return_value=[LEAKY_PLUGIN]):
+                with patch("plugin_manager.discover_skill_roots", return_value=[]):
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_save(self._args(identity="tester", dir_=str(out_dir)))
+            written = (out_dir / os.listdir(out_dir)[0]).read_text(encoding="utf-8")
+        self.assertNotIn(LEAKY_PLUGIN["installPath"], written)
+        self.assertNotIn("mosjin", written)  # the username baked into LEAKY_PLUGIN's path
+
+
+class TestLoadSnapshots(unittest.TestCase):
+    def _write(self, dir_path, name, data):
+        (dir_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+    def test_missing_dir_exits(self):
+        with self.assertRaises(SystemExit):
+            plugin_manager.load_snapshots(Path("no/such/dir"))
+
+    def test_empty_dir_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                plugin_manager.load_snapshots(Path(tmp))
+
+    def test_schema_version_mismatch_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(Path(tmp), "a.json", {"schema_version": 999})
+            with self.assertRaises(SystemExit):
+                plugin_manager.load_snapshots(Path(tmp))
+
+    def test_loads_multiple_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = {"schema_version": 1, "kind": "snapshot", "identity": "mosjin", "machine": "a",
+                    "platform": "win32", "captured_at": "2026-09-16", "plugins": [], "skills": []}
+            self._write(Path(tmp), "a.json", base)
+            self._write(Path(tmp), "b.json", dict(base, machine="b"))
+            result = plugin_manager.load_snapshots(Path(tmp))
+        self.assertEqual(len(result), 2)
+
+    def test_non_dict_json_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(Path(tmp), "a.json", ["not", "a", "dict"])
+            with self.assertRaises(SystemExit):
+                plugin_manager.load_snapshots(Path(tmp))
+
+    def test_skips_merged_output_sitting_in_same_dir(self):
+        """A `merge --out` result living in the snapshot dir must not be
+        fed back in as an input — that's how re-merging the same dir would
+        otherwise crash (missing 'machine' etc)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = {"schema_version": 1, "kind": "snapshot", "identity": "mosjin", "machine": "a",
+                    "platform": "win32", "captured_at": "2026-09-16", "plugins": [], "skills": []}
+            self._write(Path(tmp), "a.json", base)
+            self._write(Path(tmp), "merged.json", {"schema_version": 1, "kind": "merged", "identity": "mosjin"})
+            result = plugin_manager.load_snapshots(Path(tmp))
+        self.assertEqual(len(result), 1)
+
+
+def _snap(machine, platform, captured_at, plugins, skills, identity="mosjin"):
+    return {
+        "schema_version": 1, "kind": "snapshot", "identity": identity, "machine": machine,
+        "platform": platform, "captured_at": captured_at, "plugins": plugins, "skills": skills,
+    }
+
+
+def _plugin(pid, version, scope="user", enabled=True):
+    return {"id": pid, "version": version, "scope": scope, "enabled": enabled, "mcp_server_names": []}
+
+
+SNAP_MACHINE_A = _snap(
+    "win-desktop", "win32", "2026-09-16",
+    [_plugin("caveman@caveman", "v1")],
+    [{"name": "api-design", "owner": "user"}],
+)
+SNAP_MACHINE_B = _snap(
+    "linux-box", "linux", "2026-09-15",
+    [_plugin("caveman@caveman", "v2"), _plugin("ecc@ecc", "2.0.0")],
+    [],
+)
+
+
+class TestMergeSnapshots(unittest.TestCase):
+    def test_empty_input_raises(self):
+        with self.assertRaises(ValueError):
+            plugin_manager.merge_snapshots([])
+
+    def test_mismatched_identity_raises(self):
+        other = dict(SNAP_MACHINE_B, identity="someone-else")
+        with self.assertRaises(ValueError):
+            plugin_manager.merge_snapshots([SNAP_MACHINE_A, other])
+
+    def test_missing_required_field_raises_valueerror_not_keyerror(self):
+        broken = {k: v for k, v in SNAP_MACHINE_A.items() if k != "captured_at"}
+        with self.assertRaises(ValueError):
+            plugin_manager.merge_snapshots([broken])
+
+    def test_non_dict_snapshot_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            plugin_manager.merge_snapshots(["not a dict"])
+
+    def test_no_process_exit_on_bad_input(self):
+        """merge_snapshots must stay pure — ValueError, never SystemExit."""
+        with self.assertRaises(ValueError):
+            plugin_manager.merge_snapshots([])
+
+    def test_kind_marker_set(self):
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(merged["kind"], "merged")
+
+    def test_version_drift_detected(self):
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertIn("version", merged["plugins"]["caveman@caveman"]["drift"])
+
+    def test_no_drift_when_all_machines_agree(self):
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(merged["plugins"]["ecc@ecc"]["drift"], [])
+
+    def test_scope_and_enabled_drift_detected(self):
+        a = _snap("m-a", "win32", "2026-09-16", [_plugin("x@x", "1.0", scope="user", enabled=True)], [])
+        b = _snap("m-b", "linux", "2026-09-16", [_plugin("x@x", "1.0", scope="local", enabled=False)], [])
+        merged = plugin_manager.merge_snapshots([a, b])
+        self.assertEqual(set(merged["plugins"]["x@x"]["drift"]), {"scope", "enabled"})
+
+    def test_plugin_present_only_on_one_machine(self):
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        ecc_machines = set(merged["plugins"]["ecc@ecc"]["present_on"])
+        self.assertEqual(ecc_machines, {"linux-box@linux"})
+
+    def test_skills_merged_across_machines(self):
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertIn("user/api-design", merged["skills"])
+
+    def test_idempotent_same_input_same_output(self):
+        first = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        second = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(first, second)
+
+    def test_inputs_not_mutated(self):
+        before = json.dumps(SNAP_MACHINE_A)
+        plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(json.dumps(SNAP_MACHINE_A), before)
+
+    def test_two_snapshots_same_machine_latest_date_wins_wholesale(self):
+        """T3: a plugin uninstalled and a skill deleted between an old save
+        and a new one for the SAME machine must both disappear — merge
+        picks one snapshot per machine wholesale, never unions two of a
+        machine's own snapshots field-by-field."""
+        old = _snap(
+            "win-desktop", "win32", "2026-01-01",
+            [_plugin("caveman@caveman", "OLD"), _plugin("gone@gone", "1.0")],
+            [{"name": "stale-skill", "owner": "user"}],
+        )
+        new = _snap(
+            "win-desktop", "win32", "2026-09-16",
+            [_plugin("caveman@caveman", "NEW")],
+            [],
+        )
+        merged_forward = plugin_manager.merge_snapshots([old, new])
+        merged_reversed = plugin_manager.merge_snapshots([new, old])
+        for merged in (merged_forward, merged_reversed):
+            self.assertEqual(
+                merged["plugins"]["caveman@caveman"]["present_on"]["win-desktop@win32"]["version"],
+                "NEW",
+            )
+            self.assertNotIn("gone@gone", merged["plugins"])
+            self.assertNotIn("user/stale-skill", merged["skills"])
+
+    def test_same_day_tie_is_deterministic_and_noted(self):
+        a = _snap("win-desktop", "win32", "2026-09-16", [_plugin("x@x", "first")], [])
+        b = _snap("win-desktop", "win32", "2026-09-16", [_plugin("x@x", "second")], [])
+        merged = plugin_manager.merge_snapshots([a, b])
+        self.assertEqual(
+            merged["plugins"]["x@x"]["present_on"]["win-desktop@win32"]["version"], "second"
+        )
+        self.assertTrue(any("multiple snapshots dated" in note for note in merged["notes"]))
+
+
+class TestCmdMerge(unittest.TestCase):
+    def _args(self, dir_, out=None):
+        class Args:
+            pass
+        a = Args()
+        a.dir = dir_
+        a.out = out
+        return a
+
+    def test_prints_drift_and_missing_machines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            (Path(tmp) / "b.json").write_text(json.dumps(SNAP_MACHINE_B), encoding="utf-8")
+            with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                plugin_manager.cmd_merge(self._args(tmp))
+            output = mock_out.getvalue()
+        self.assertIn("version drift", output)
+        self.assertIn("missing on", output)
+
+    def test_writes_merged_json_when_out_given(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            out_path = Path(tmp) / "merged.json"
+            with patch("sys.stdout", new_callable=StringIO):
+                plugin_manager.cmd_merge(self._args(tmp, out=str(out_path)))
+            self.assertTrue(out_path.exists())
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["identity"], "mosjin")
+
+    def test_bad_input_exits_cleanly_not_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = dict(SNAP_MACHINE_B, identity="someone-else")
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            (Path(tmp) / "b.json").write_text(json.dumps(other), encoding="utf-8")
+            with patch("sys.stdout", new_callable=StringIO):
+                with self.assertRaises(SystemExit):
+                    plugin_manager.cmd_merge(self._args(tmp))
+
+    def test_out_creates_missing_parent_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            out_path = Path(tmp) / "reports" / "merged.json"
+            with patch("sys.stdout", new_callable=StringIO):
+                plugin_manager.cmd_merge(self._args(tmp, out=str(out_path)))
+            self.assertTrue(out_path.exists())
+
+    def test_merge_out_into_snapshot_dir_then_remerge_does_not_crash(self):
+        """T4/#4: `--out` writing into the same dir it read from must not
+        poison that dir for the next `merge` run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            out_path = Path(tmp) / "merged.json"
+            with patch("sys.stdout", new_callable=StringIO):
+                plugin_manager.cmd_merge(self._args(tmp, out=str(out_path)))
+                plugin_manager.cmd_merge(self._args(tmp))  # re-merge same dir
 
 
 if __name__ == "__main__":
