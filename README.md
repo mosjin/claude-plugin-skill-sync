@@ -1,6 +1,7 @@
-# claude-plugin-updater
+# claude-plugin-skill-sync
 
-Cross-platform Python CLI to simplify Claude plugin management.
+Cross-platform Python CLI to manage Claude Code plugins and sync
+installed plugins/skills across machines.
 
 ## Requirements
 

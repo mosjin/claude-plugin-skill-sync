@@ -795,7 +795,7 @@ def cmd_upload(args) -> None:
             sys.exit(f"Error uploading to gist {gist_id}: {_clean_gh_error(out, err, code)}")
         print(f"Uploaded {file_path.name} to gist {gist_id}")
     else:
-        code, out, err = run_gh(["gist", "create", str(file_path), "-d", "claude_plugin_updater snapshots"])
+        code, out, err = run_gh(["gist", "create", str(file_path), "-d", "claude-plugin-skill-sync snapshots"])
         if code != 0:
             sys.exit(f"Error creating gist: {_clean_gh_error(out, err, code)}")
         new_id = _extract_gist_id(out + err)

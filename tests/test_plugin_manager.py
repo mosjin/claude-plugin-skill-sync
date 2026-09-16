@@ -1269,7 +1269,7 @@ class TestCmdUpload(unittest.TestCase):
                 with patch("sys.stdout", new_callable=StringIO) as mock_out:
                     plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
                     output = mock_out.getvalue()
-            mock.assert_called_once_with(["gist", "create", str(snap), "-d", "claude_plugin_updater snapshots"])
+            mock.assert_called_once_with(["gist", "create", str(snap), "-d", "claude-plugin-skill-sync snapshots"])
             self.assertNotIn("--public", mock.call_args[0][0])
             self.assertIn("aabbcc1122", output)
             self.assertEqual((Path(tmp) / ".gist_id").read_text(encoding="utf-8"), "aabbcc1122")
