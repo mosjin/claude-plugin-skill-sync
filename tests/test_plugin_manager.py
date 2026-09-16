@@ -1114,5 +1114,261 @@ class TestCmdMerge(unittest.TestCase):
                 plugin_manager.cmd_merge(self._args(tmp))  # re-merge same dir
 
 
+class TestRunGh(unittest.TestCase):
+    def test_finds_gh_executable(self):
+        with patch("plugin_manager.shutil.which", return_value="/usr/bin/gh"):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+                code, out, err = plugin_manager.run_gh(["gist", "list"])
+        self.assertEqual(code, 0)
+        args = mock_run.call_args[0][0]
+        self.assertEqual(args[0], "/usr/bin/gh")
+        self.assertIn("gist", args)
+
+    def test_exits_if_gh_not_in_path(self):
+        with patch("plugin_manager.shutil.which", return_value=None):
+            with self.assertRaises(SystemExit):
+                plugin_manager.run_gh(["gist", "list"])
+
+
+VALID_SNAPSHOT_CONTENT = json.dumps({
+    "schema_version": 1, "kind": "snapshot", "identity": "mosjin", "machine": "m",
+    "platform": "win32", "captured_at": "2026-09-16", "plugins": [], "skills": [],
+})
+
+
+class TestCleanGhError(unittest.TestCase):
+    def test_prefers_err_when_present(self):
+        self.assertEqual(plugin_manager._clean_gh_error("stdout stuff", "real error", 1), "real error (exit 1)")
+
+    def test_falls_back_to_out_when_err_is_whitespace_only(self):
+        self.assertEqual(plugin_manager._clean_gh_error("useful message", "  \n", 1), "useful message (exit 1)")
+
+    def test_no_output_at_all(self):
+        self.assertEqual(plugin_manager._clean_gh_error("", "", 1), "no output (exit 1)")
+
+
+class TestIsValidSnapshotFile(unittest.TestCase):
+    def test_valid_snapshot_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "a.json"
+            p.write_text(VALID_SNAPSHOT_CONTENT, encoding="utf-8")
+            self.assertTrue(plugin_manager._is_valid_snapshot_file(p))
+
+    def test_merged_kind_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "a.json"
+            p.write_text(json.dumps({"schema_version": 1, "kind": "merged"}), encoding="utf-8")
+            self.assertFalse(plugin_manager._is_valid_snapshot_file(p))
+
+    def test_garbage_json_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "a.json"
+            p.write_text("{}", encoding="utf-8")
+            self.assertFalse(plugin_manager._is_valid_snapshot_file(p))
+
+    def test_non_json_rejected_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "a.json"
+            p.write_text("not json at all", encoding="utf-8")
+            self.assertFalse(plugin_manager._is_valid_snapshot_file(p))
+
+
+class TestResolveGistId(unittest.TestCase):
+    def _args(self, gist_id=None):
+        class Args:
+            pass
+        a = Args()
+        a.gist_id = gist_id
+        return a
+
+    def test_uses_flag(self):
+        self.assertEqual(plugin_manager.resolve_gist_id(self._args("abc123")), "abc123")
+
+    def test_falls_back_to_env(self):
+        with patch.dict("os.environ", {plugin_manager.ENV_GIST_ID: "env-gist"}, clear=False):
+            self.assertEqual(plugin_manager.resolve_gist_id(self._args(None)), "env-gist")
+
+    def test_falls_back_to_dir_marker_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_dir = Path(tmp)
+            (snapshot_dir / ".gist_id").write_text("cached-id-123", encoding="utf-8")
+            with patch.dict("os.environ", {}, clear=True):
+                result = plugin_manager.resolve_gist_id(self._args(None), snapshot_dir)
+        self.assertEqual(result, "cached-id-123")
+
+    def test_flag_wins_over_marker_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_dir = Path(tmp)
+            (snapshot_dir / ".gist_id").write_text("cached-id", encoding="utf-8")
+            result = plugin_manager.resolve_gist_id(self._args("flag-id"), snapshot_dir)
+        self.assertEqual(result, "flag-id")
+
+    def test_missing_everywhere_returns_none(self):
+        """Unlike identity/machine, no gist id is a VALID state for upload
+        (it means: create a new gist) — must not exit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {}, clear=True):
+                self.assertIsNone(plugin_manager.resolve_gist_id(self._args(None), Path(tmp)))
+
+
+class TestExtractGistId(unittest.TestCase):
+    def test_finds_url_anywhere_in_output(self):
+        out = "Some preamble line\nhttps://gist.github.com/mosjin/5b0e0062eb8e9654adad7bb1d81cc75f\nmore text\n"
+        self.assertEqual(plugin_manager._extract_gist_id(out), "5b0e0062eb8e9654adad7bb1d81cc75f")
+
+    def test_no_url_present_exits_loudly(self):
+        """The bug this replaces: silently returning '' on unparseable
+        output instead of failing where the mistake is easy to notice."""
+        with self.assertRaises(SystemExit):
+            plugin_manager._extract_gist_id("no url in here at all")
+
+
+class TestCmdUpload(unittest.TestCase):
+    def _args(self, file, gist_id=None, dir_=None):
+        class Args:
+            pass
+        a = Args()
+        a.file = file
+        a.gist_id = gist_id
+        a.dir = dir_
+        return a
+
+    def _write_snapshot(self, tmp, name="a.json"):
+        p = Path(tmp) / name
+        p.write_text(VALID_SNAPSHOT_CONTENT, encoding="utf-8")
+        return p
+
+    def test_missing_file_exits(self):
+        with self.assertRaises(SystemExit):
+            plugin_manager.cmd_upload(self._args("no/such/file.json"))
+
+    def test_non_snapshot_file_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = Path(tmp) / "merged.json"
+            merged.write_text(json.dumps({"schema_version": 1, "kind": "merged"}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                plugin_manager.cmd_upload(self._args(str(merged), gist_id="x"))
+
+    def test_adds_to_existing_gist_exact_argv_no_public_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp)
+            with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                with patch("sys.stdout", new_callable=StringIO):
+                    plugin_manager.cmd_upload(self._args(str(snap), gist_id="existing123", dir_=tmp))
+        mock.assert_called_once_with(["gist", "edit", "existing123", "--add", str(snap)])
+        self.assertNotIn("--public", mock.call_args[0][0])
+
+    def test_creates_new_gist_exact_argv_and_caches_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp)
+            with patch(
+                "plugin_manager.run_gh",
+                return_value=(0, "https://gist.github.com/mosjin/aabbcc1122\n", ""),
+            ) as mock:
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
+                    output = mock_out.getvalue()
+            mock.assert_called_once_with(["gist", "create", str(snap), "-d", "claude_plugin_updater snapshots"])
+            self.assertNotIn("--public", mock.call_args[0][0])
+            self.assertIn("aabbcc1122", output)
+            self.assertEqual((Path(tmp) / ".gist_id").read_text(encoding="utf-8"), "aabbcc1122")
+
+    def test_second_upload_reuses_cached_id_without_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".gist_id").write_text("cached999", encoding="utf-8")
+            snap = self._write_snapshot(tmp, "b.json")
+            with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                with patch("sys.stdout", new_callable=StringIO):
+                    plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
+        mock.assert_called_once_with(["gist", "edit", "cached999", "--add", str(snap)])
+
+    def test_gh_failure_exits_with_real_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp)
+            with patch("plugin_manager.run_gh", return_value=(1, "", "not found")):
+                with self.assertRaises(SystemExit) as ctx:
+                    plugin_manager.cmd_upload(self._args(str(snap), gist_id="bad-id", dir_=tmp))
+        self.assertIn("not found", str(ctx.exception))
+
+
+class TestCmdFetch(unittest.TestCase):
+    def _args(self, gist_id=None, dir_=None):
+        class Args:
+            pass
+        a = Args()
+        a.gist_id = gist_id
+        a.dir = dir_
+        return a
+
+    def test_missing_gist_id_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {}, clear=True):
+                with self.assertRaises(SystemExit):
+                    plugin_manager.cmd_fetch(self._args(dir_=str(Path(tmp) / "snaps")))
+
+    def test_clone_failure_exits_with_real_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("plugin_manager.run_gh", return_value=(1, "", "gist not found")):
+                with self.assertRaises(SystemExit) as ctx:
+                    plugin_manager.cmd_fetch(self._args(gist_id="abc", dir_=str(Path(tmp) / "snaps")))
+        self.assertIn("gist not found", str(ctx.exception))
+
+    def _fake_clone_with(self, files: dict):
+        def fake_clone(args):
+            self.assertEqual(args[:3], ["gist", "clone", "abc"])
+            clone_dir = Path(args[3])
+            clone_dir.mkdir(parents=True, exist_ok=True)
+            for name, content in files.items():
+                (clone_dir / name).write_text(content, encoding="utf-8")
+            return (0, "", "")
+        return fake_clone
+
+    def test_copies_new_files_skips_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            out_dir.mkdir()
+            (out_dir / "already-here.json").write_text('{"a": 1}', encoding="utf-8")
+
+            fake_clone = self._fake_clone_with({
+                "already-here.json": VALID_SNAPSHOT_CONTENT,
+                "new-one.json": VALID_SNAPSHOT_CONTENT,
+            })
+            with patch("plugin_manager.run_gh", side_effect=fake_clone):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_fetch(self._args(gist_id="abc", dir_=str(out_dir)))
+                    output = mock_out.getvalue()
+
+            self.assertTrue((out_dir / "new-one.json").exists())
+            # local copy must not be clobbered by a same-named remote file
+            self.assertEqual((out_dir / "already-here.json").read_text(encoding="utf-8"), '{"a": 1}')
+        self.assertIn("2 snapshot(s) found, 1 new one(s)", output)
+
+    def test_skips_invalid_files_reports_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            fake_clone = self._fake_clone_with({
+                "good.json": VALID_SNAPSHOT_CONTENT,
+                "bad.json": json.dumps({"schema_version": 1, "kind": "merged"}),
+            })
+            with patch("plugin_manager.run_gh", side_effect=fake_clone):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_fetch(self._args(gist_id="abc", dir_=str(out_dir)))
+                    output = mock_out.getvalue()
+            self.assertTrue((out_dir / "good.json").exists())
+            self.assertFalse((out_dir / "bad.json").exists())
+        self.assertIn("skipped 1 file(s)", output)
+
+    def test_zero_json_files_in_gist_does_not_claim_already_synced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+            fake_clone = self._fake_clone_with({})
+            with patch("plugin_manager.run_gh", side_effect=fake_clone):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_fetch(self._args(gist_id="abc", dir_=str(out_dir)))
+                    output = mock_out.getvalue()
+        self.assertIn("0 snapshot(s) found", output)
+
+
 if __name__ == "__main__":
     unittest.main()

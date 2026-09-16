@@ -1,4 +1,4 @@
-"""Claude plugin manager — list and batch-update plugins.
+"""Claude plugin manager — list, update, and snapshot-sync plugins/skills.
 
 Usage:
     python plugin_manager.py list
@@ -6,6 +6,10 @@ Usage:
     python plugin_manager.py update caveman ecc eduforge
     python plugin_manager.py update --all
     python plugin_manager.py update --all --parallel
+    python plugin_manager.py save --identity mosjin --machine work-laptop
+    python plugin_manager.py merge
+    python plugin_manager.py upload snapshots/<file>.json
+    python plugin_manager.py fetch --gist-id <id>
 """
 
 import argparse
@@ -16,9 +20,11 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 
 def run_claude(args: list) -> tuple:
@@ -30,6 +36,22 @@ def run_claude(args: list) -> tuple:
     exe = shutil.which("claude")
     if not exe:
         sys.exit("Error: 'claude' not found in PATH. Is Claude Code installed?")
+    result = subprocess.run(
+        [exe] + args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_gh(args: list) -> tuple:
+    """Thin subprocess seam for the GitHub CLI — mirrors run_claude() so
+    `upload`/`fetch` are mockable the same way the rest of the file is.
+    """
+    exe = shutil.which("gh")
+    if not exe:
+        sys.exit("Error: 'gh' not found in PATH. Is GitHub CLI installed?")
     result = subprocess.run(
         [exe] + args,
         capture_output=True,
@@ -332,6 +354,7 @@ DEFAULT_SNAPSHOT_DIR = Path("snapshots")
 ENV_IDENTITY = "PLUGIN_MANAGER_IDENTITY"
 ENV_MACHINE = "PLUGIN_MANAGER_MACHINE"
 ENV_SNAPSHOT_DIR = "PLUGIN_MANAGER_SNAPSHOT_DIR"
+ENV_GIST_ID = "PLUGIN_MANAGER_GIST_ID"
 
 
 def _sanitize_label(label: str) -> str:
@@ -684,10 +707,143 @@ def cmd_merge(args) -> None:
         print(f"\nMerged view written to: {out_path}")
 
 
+_GIST_URL_RE = re.compile(r"https://gist\.github\.com/[^/\s]+/([0-9a-fA-F]+)")
+
+
+def _gist_id_marker_path(snapshot_dir: Path) -> Path:
+    """A gist id is paired with the snapshot dir it syncs, not with any
+    single command invocation — caching it here (next to the data it
+    identifies) means a second `upload` in the same dir doesn't need
+    --gist-id/the env var repeated, and can't silently spray snapshots
+    across a fresh gist every time the flag is forgotten."""
+    return snapshot_dir / ".gist_id"
+
+
+def resolve_gist_id(args, snapshot_dir: Optional[Path] = None) -> Optional[str]:
+    """No sys.exit here — unlike identity/machine, a missing gist id is
+    valid for `upload` (it means "create a new one"). `fetch` requires one
+    and checks for it itself. Precedence: --gist-id flag, then the env
+    var, then this snapshot dir's own cached marker file.
+    """
+    if args.gist_id:
+        return args.gist_id
+    env_id = os.environ.get(ENV_GIST_ID)
+    if env_id:
+        return env_id
+    if snapshot_dir is not None:
+        marker = _gist_id_marker_path(snapshot_dir)
+        if marker.is_file():
+            return marker.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def _extract_gist_id(create_output: str) -> str:
+    """`gh gist create` prints the new gist's URL somewhere in its output —
+    search rather than assume it's the entire (or even the first) line, and
+    fail loudly instead of returning a hard-to-notice empty string."""
+    match = _GIST_URL_RE.search(create_output)
+    if not match:
+        sys.exit(
+            f"Error: could not find a gist URL in `gh gist create` output: "
+            f"{create_output.strip()!r}"
+        )
+    return match.group(1)
+
+
+def _clean_gh_error(out: str, err: str, code: int) -> str:
+    """Prefer whichever stream actually has content — `err` being
+    whitespace-only must not swallow a real message that landed in `out`."""
+    message = err.strip() or out.strip() or "no output"
+    return f"{message} (exit {code})"
+
+
+def _is_valid_snapshot_file(path: Path) -> bool:
+    """Refuse anything that isn't a `save`-produced snapshot — guards both
+    `upload` (don't push `merged.json` or an unrelated file under a gist
+    filename that silently replaces a real snapshot) and `fetch` (don't
+    import a file that would make every later `merge` in this dir explode,
+    permanently, since 'already exists locally' is the only skip check).
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("kind") == "snapshot"
+        and data.get("schema_version") == SNAPSHOT_SCHEMA_VERSION
+    )
+
+
+def cmd_upload(args) -> None:
+    file_path = Path(args.file)
+    if not file_path.is_file():
+        sys.exit(f"Error: snapshot file not found: {file_path}")
+    if not _is_valid_snapshot_file(file_path):
+        sys.exit(
+            f"Error: {file_path} doesn't look like a `save`-produced "
+            f"snapshot (expected kind='snapshot', schema_version="
+            f"{SNAPSHOT_SCHEMA_VERSION})."
+        )
+
+    snapshot_dir = resolve_snapshot_dir(args)
+    gist_id = resolve_gist_id(args, snapshot_dir)
+    if gist_id:
+        code, out, err = run_gh(["gist", "edit", gist_id, "--add", str(file_path)])
+        if code != 0:
+            sys.exit(f"Error uploading to gist {gist_id}: {_clean_gh_error(out, err, code)}")
+        print(f"Uploaded {file_path.name} to gist {gist_id}")
+    else:
+        code, out, err = run_gh(["gist", "create", str(file_path), "-d", "claude_plugin_updater snapshots"])
+        if code != 0:
+            sys.exit(f"Error creating gist: {_clean_gh_error(out, err, code)}")
+        new_id = _extract_gist_id(out + err)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        _gist_id_marker_path(snapshot_dir).write_text(new_id, encoding="utf-8")
+        print(f"Created new gist ({(out + err).strip()})")
+        print("  secret = unlisted, not private — anyone with the link can read it.")
+        print(
+            f"\nCached in {_gist_id_marker_path(snapshot_dir)} — future "
+            f"upload/fetch in this dir reuse it automatically. To reuse it "
+            f"from a different --dir, set {ENV_GIST_ID}={new_id}."
+        )
+
+
+def cmd_fetch(args) -> None:
+    out_dir = resolve_snapshot_dir(args)
+    gist_id = resolve_gist_id(args, out_dir)
+    if not gist_id:
+        sys.exit(f"Error: gist id required. Pass --gist-id <id> or set {ENV_GIST_ID}.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        clone_dir = Path(tmp) / "gist"
+        code, out, err = run_gh(["gist", "clone", gist_id, str(clone_dir)])
+        if code != 0:
+            sys.exit(f"Error cloning gist {gist_id}: {_clean_gh_error(out, err, code)}")
+
+        found = copied = invalid = 0
+        for src in sorted(clone_dir.glob("*.json")):
+            found += 1
+            dest = out_dir / src.name
+            if dest.exists():
+                continue
+            if not _is_valid_snapshot_file(src):
+                invalid += 1
+                continue
+            shutil.copyfile(src, dest)
+            copied += 1
+
+        print(f"Fetched gist {gist_id}: {found} snapshot(s) found, {copied} new one(s) copied into {out_dir}")
+        if invalid:
+            print(f"  skipped {invalid} file(s) that aren't valid `save` snapshots")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="plugin_manager",
-        description="Claude plugin manager — list, update, and uninstall plugins",
+        description="Claude plugin manager — list, update, uninstall, and snapshot-sync plugins/skills",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -724,6 +880,24 @@ def main() -> None:
     )
     merge.add_argument("--out", help="Optional path to also write the merged view as JSON")
 
+    upload = sub.add_parser("upload", help="Upload a snapshot file to a GitHub Gist")
+    upload.add_argument("file", help="Path to the snapshot JSON file to upload (printed by `save`)")
+    upload.add_argument(
+        "--gist-id",
+        help=f"Existing gist id to add to (default: ${ENV_GIST_ID} or the target dir's cached id; creates a new secret gist if none found)",
+    )
+    upload.add_argument(
+        "--dir",
+        help=f"Snapshot dir this gist is paired with, for caching the id (default: ${ENV_SNAPSHOT_DIR} or ./{DEFAULT_SNAPSHOT_DIR})",
+    )
+
+    fetch = sub.add_parser("fetch", help="Fetch snapshots from a GitHub Gist into the local snapshot dir")
+    fetch.add_argument("--gist-id", help=f"Gist id to fetch from (default: ${ENV_GIST_ID})")
+    fetch.add_argument(
+        "--dir",
+        help=f"Local snapshot dir to copy into (default: ${ENV_SNAPSHOT_DIR} or ./{DEFAULT_SNAPSHOT_DIR})",
+    )
+
     args = parser.parse_args()
     if args.command == "list":
         cmd_list(args)
@@ -737,6 +911,10 @@ def main() -> None:
         cmd_save(args)
     elif args.command == "merge":
         cmd_merge(args)
+    elif args.command == "upload":
+        cmd_upload(args)
+    elif args.command == "fetch":
+        cmd_fetch(args)
 
 
 if __name__ == "__main__":
