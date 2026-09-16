@@ -1,5 +1,10 @@
 # Changelog
 
+## [unreleased] 2026-09-17
+
+### 📐 Refactor
+- Repo renamed `claude_plugin_updater` → `claude-plugin-skill-sync` to reflect actual scope (plugin management + cross-machine plugin/skill sync, not just "updating"). Old GitHub URL still redirects. Local project folder intentionally left unrenamed — see LESSONS.md.
+
 ## [unreleased] 2026-09-16
 
 ### 🚀 Feature

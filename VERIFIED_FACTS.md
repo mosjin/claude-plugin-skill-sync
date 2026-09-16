@@ -1,5 +1,12 @@
 # Verified Facts
 
+### On this Windows machine, a directory that is Claude Code's own session CWD cannot be renamed from within that session
+- **Fact**: renaming `D:\works\claude_plugin_updater` failed identically from bash (`mv`) and a separate PowerShell process (`Rename-Item`) — both report the directory is in use.
+- **Verified on**: 2026-09-17
+- **Evidence**: both commands' error output in this session (`Device or resource busy`; `Cannot rename the item ... because it is in use`).
+- **Verified by**: me, running both directly.
+- **Invalidated by**: closing the session first, or running the rename from an unrelated terminal — either should work since the lock is the active session's own CWD handle, not a filesystem property.
+
 ### `claude plugin update`/`uninstall` support `-s/--scope <user|project|local|managed>`, default `user`
 - **Fact**: without `-s`, both commands fail on any plugin not installed at `user` scope.
 - **Verified on**: 2026-09-16

@@ -1,5 +1,11 @@
 # Lessons Learned
 
+## Local directory rename while it's an active session's CWD (Windows)
+
+- **Lesson:** renaming `D:\works\claude_plugin_updater` itself failed with "Device or resource busy" (bash `mv`) / "Cannot rename the item ... because it is in use" (PowerShell `Rename-Item`, a *separate* process) — even after `cd`-ing the bash shell out of the directory first.
+  - **Why:** the Claude Code CLI host process this session runs in has that directory as its own working directory; Windows refuses to rename a directory any live process still has open as CWD, regardless of which tool/process issues the rename command.
+  - **Avoid:** don't keep retrying the rename with different tools once two independent processes both fail with the same "in use" class of error — that's confirmation, not a fluke. Local project-folder renames need to happen from outside the active session (a different terminal, or after closing this session), not from within it.
+
 ## Desensitization / privacy-sensitive data export
 
 - **Lesson:** "sanitize the filename" is not the same as "sanitize the data" — the first cmd_save implementation slugged identity/machine only for the output filename, then wrote the *raw* (unsanitized, potentially-full-email) values into the JSON body itself.
