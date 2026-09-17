@@ -489,6 +489,46 @@ def whitelist_plugin(plugin: dict) -> dict:
     }
 
 
+def whitelist_marketplace(m: dict) -> Optional[dict]:
+    """Build the portable, desensitized marketplace record.
+
+    Same field-by-field allowlist discipline as whitelist_plugin:
+    `installLocation` (a local filesystem path, may embed a username) is
+    never captured. Only the two remote source shapes `claude plugin
+    marketplace add` accepts are portable — `source: "github"` carries
+    `repo` ("owner/repo"), `source: "git"` carries a full `url`. Anything
+    else (e.g. a marketplace added from a local directory) has nothing
+    portable to record; still keep name+source so `apply` on another
+    machine can at least explain why it can't auto-add this one, instead
+    of silently pretending the marketplace never existed.
+    """
+    name = m.get("name")
+    source = m.get("source")
+    if not name or not source:
+        return None
+    record = {"name": name, "source": source}
+    if source == "github" and m.get("repo"):
+        record["repo"] = m["repo"]
+    elif source == "git" and m.get("url"):
+        record["url"] = m["url"]
+    return record
+
+
+def list_marketplaces() -> list:
+    """Every marketplace configured on this machine, as `claude plugin
+    marketplace list --json` reports it (name, source, repo/url,
+    installLocation) — the single call site both
+    marketplace_install_locations() and capture_snapshot() build on.
+    """
+    code, out, err = run_claude(["plugin", "marketplace", "list", "--json"])
+    if code != 0:
+        sys.exit(f"Error listing marketplaces: {err.strip()}")
+    marketplaces = json.loads(out)
+    if not isinstance(marketplaces, list):
+        sys.exit(f"Error: unexpected response from claude (expected list, got {type(marketplaces).__name__})")
+    return marketplaces
+
+
 def scan_skills(root, owner: str) -> list:
     """Find `<root>/skills/*/SKILL.md` and return portable skill records.
 
@@ -541,10 +581,14 @@ def discover_skill_roots(all_plugins: list) -> list:
 def capture_snapshot(identity: str, machine: str, all_plugins: list) -> dict:
     """Build the full desensitized snapshot — the one schema `save`,
     `merge`, and (later) `upload`/`apply` all share.
+
+    `marketplaces` is additive (not in _REQUIRED_SNAPSHOT_FIELDS) — a
+    snapshot saved before this field existed must still load and merge.
     """
     skills = []
     for root, owner in discover_skill_roots(all_plugins):
         skills.extend(scan_skills(root, owner))
+    marketplaces = [m for m in (whitelist_marketplace(m) for m in list_marketplaces()) if m]
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "kind": "snapshot",
@@ -554,6 +598,7 @@ def capture_snapshot(identity: str, machine: str, all_plugins: list) -> dict:
         "captured_at": datetime.now(timezone.utc).date().isoformat(),
         "plugins": [whitelist_plugin(p) for p in all_plugins],
         "skills": skills,
+        "marketplaces": marketplaces,
     }
 
 
@@ -683,6 +728,7 @@ def merge_snapshots(snapshots: list) -> dict:
 
     plugins = {}
     skills = {}
+    marketplaces = {}
     for machine_key, snap in latest_by_machine.items():
         for plugin in snap["plugins"]:
             entry = plugins.setdefault(plugin["id"], {"present_on": {}})
@@ -695,6 +741,11 @@ def merge_snapshots(snapshots: list) -> dict:
             skill_key = f"{skill['owner']}/{skill['name']}"
             entry = skills.setdefault(skill_key, {"present_on": {}})
             entry["present_on"][machine_key] = True
+        # Absent on snapshots saved before this field existed — .get(), not
+        # a required field, so those old snapshots still merge cleanly.
+        for market in snap.get("marketplaces", []):
+            entry = marketplaces.setdefault(market["name"], {"present_on": {}})
+            entry["present_on"][machine_key] = {k: v for k, v in market.items() if k != "name"}
 
     for entry in plugins.values():
         infos = entry["present_on"].values()
@@ -707,6 +758,16 @@ def merge_snapshots(snapshots: list) -> dict:
             drift.append("enabled")
         entry["drift"] = drift
 
+    for name, entry in marketplaces.items():
+        infos = list(entry["present_on"].values())
+        # Every machine's recording of this marketplace's source should
+        # agree — if they don't, `apply` needs one to trust; last one
+        # written wins (dict iteration over latest_by_machine), same
+        # tie-break philosophy as the per-machine snapshot pick above.
+        sources = {json.dumps(i, sort_keys=True) for i in infos}
+        entry["drift"] = ["source"] if len(sources) > 1 else []
+        entry["source_record"] = infos[-1]
+
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "kind": "merged",
@@ -714,6 +775,7 @@ def merge_snapshots(snapshots: list) -> dict:
         "machines": machines,
         "plugins": plugins,
         "skills": skills,
+        "marketplaces": marketplaces,
         "notes": notes,
     }
 
@@ -978,20 +1040,24 @@ LANG_MESSAGES = {
     "en": {
         "nothing_missing": "Nothing missing — every plugin in the merged snapshot is already installed here.",
         "installable_header": "Installable (marketplace already available here):",
-        "skip_header": "Skipped (marketplace not added on this machine — add its source first):",
+        "addable_header": "Needs a marketplace add first (will be added automatically with -y):",
+        "skip_header": "Skipped (no marketplace source on record — add it manually first):",
         "dry_run_note": "Dry run — pass -y to actually install. Nothing was installed.",
         "scope_required": "Error: --scope is required to actually install (user/project/local).",
         "select_prompt": "Install which? [a]ll / [n]one / comma-separated numbers: ",
+        "adding_marketplace": "Adding marketplace '{name}' from {source}...",
         "installing": "Installing {id} (scope={scope})...",
         "summary": "Installed: {ok}  Failed: {fail}",
     },
     "zh": {
         "nothing_missing": "没有缺的插件 — 合并快照里的插件这台机器都已经装了。",
         "installable_header": "可装（这台机器已有对应 marketplace）：",
-        "skip_header": "跳过（这台机器还没加这个 marketplace，先手动加源）：",
+        "addable_header": "需要先加 marketplace 源（加 -y 会自动加）：",
+        "skip_header": "跳过（没记录到 marketplace 源，先手动加）：",
         "dry_run_note": "预览模式，未实际安装。加 -y 才会真正安装。",
         "scope_required": "错误：真正安装需要 --scope（user/project/local）。",
         "select_prompt": "装哪些？[a]全部 / [n]不装 / 逗号分隔序号：",
+        "adding_marketplace": "正在加 marketplace '{name}'（源：{source}）...",
         "installing": "正在装 {id}（scope={scope}）...",
         "summary": "已装：{ok}  失败：{fail}",
     },
@@ -1006,14 +1072,13 @@ def _msg(lang: str, key: str, **kwargs) -> str:
 
 def marketplace_install_locations() -> dict:
     """name -> Path(installLocation) for every marketplace already
-    configured on this machine — `apply` can only install a plugin whose
-    marketplace is already known here (it has no other way to learn that
-    marketplace's source)."""
-    code, out, err = run_claude(["plugin", "marketplace", "list", "--json"])
-    if code != 0:
-        sys.exit(f"Error listing marketplaces: {err.strip()}")
+    configured on this machine. `apply` uses this for the fast path (the
+    marketplace is already here); when it's missing here, `apply` falls
+    back to the merged snapshot's own recorded source (see
+    whitelist_marketplace) before giving up.
+    """
     locations = {}
-    for m in json.loads(out):
+    for m in list_marketplaces():
         loc = m.get("installLocation")
         if m.get("name") and loc:
             locations[m["name"]] = Path(loc)
@@ -1060,6 +1125,45 @@ def missing_plugin_ids(merged: dict, installed_ids: set) -> list:
     return sorted(pid for pid in merged["plugins"] if pid not in installed_ids)
 
 
+def addable_marketplace_source(record: dict) -> Optional[str]:
+    """The string to hand `claude plugin marketplace add` for a merged
+    view's recorded marketplace source record — the same two portable
+    shapes whitelist_marketplace keeps. None means there's nothing
+    portable on record (old-schema merged file, or the source machine
+    added it from a local path) — `apply` must leave that plugin skipped.
+    """
+    if record.get("source") == "github" and record.get("repo"):
+        return record["repo"]
+    if record.get("source") == "git" and record.get("url"):
+        return record["url"]
+    return None
+
+
+def classify_missing_plugins(missing: list, local_marketplaces: dict, merged_marketplaces: dict) -> tuple:
+    """Three-way split, not two: a plugin whose marketplace isn't on this
+    machine yet is only truly stuck (`skipped`) if the merged snapshot also
+    has no portable source recorded for it. Otherwise it's `addable` —
+    `apply -y` can add that marketplace itself first. Returns
+    (installable, addable, addable_sources) where addable_sources maps
+    marketplace name -> the source string to pass to `marketplace add`.
+    """
+    installable, addable, skipped = [], [], []
+    addable_sources = {}
+    for pid in missing:
+        _, _, marketplace = pid.partition("@")
+        if marketplace in local_marketplaces:
+            installable.append(pid)
+            continue
+        record = merged_marketplaces.get(marketplace, {}).get("source_record", {})
+        source = addable_marketplace_source(record)
+        if source:
+            addable.append(pid)
+            addable_sources[marketplace] = source
+        else:
+            skipped.append(pid)
+    return installable, addable, skipped, addable_sources
+
+
 def cmd_apply(args) -> None:
     lang = args.lang or DEFAULT_LANG
     merged = load_merged(Path(args.merged_file))
@@ -1070,46 +1174,52 @@ def cmd_apply(args) -> None:
         print(_msg(lang, "nothing_missing"))
         return
 
-    marketplaces = marketplace_install_locations()
-    installable, skipped = [], []
-    for pid in missing:
-        _, _, marketplace = pid.partition("@")
-        (installable if marketplace in marketplaces else skipped).append(pid)
+    local_marketplaces = marketplace_install_locations()
+    merged_marketplaces = merged.get("marketplaces", {})
+    installable, addable, skipped, addable_sources = classify_missing_plugins(
+        missing, local_marketplaces, merged_marketplaces
+    )
 
     if installable:
         print(_msg(lang, "installable_header"))
         for pid in installable:
             where = ", ".join(sorted(merged["plugins"][pid]["present_on"]))
             print(f"  {pid}  (on: {where})")
-            desc = plugin_description(pid, marketplaces)
+            desc = plugin_description(pid, local_marketplaces)
             if desc:
                 print(f"    {desc}")
+    if addable:
+        print(_msg(lang, "addable_header"))
+        for pid in addable:
+            _, _, marketplace = pid.partition("@")
+            print(f"  {pid}  (adds marketplace '{marketplace}' from {addable_sources[marketplace]})")
     if skipped:
         print(_msg(lang, "skip_header"))
         for pid in skipped:
             print(f"  {pid}")
 
-    if not installable:
+    selectable = installable + addable
+    if not selectable:
         return
 
     if args.all:
-        targets = installable
+        targets = selectable
     elif args.plugins:
-        targets = [p for p in args.plugins if p in installable]
-        unknown = [p for p in args.plugins if p not in installable]
+        targets = [p for p in args.plugins if p in selectable]
+        unknown = [p for p in args.plugins if p not in selectable]
         if unknown:
             sys.exit(f"Error: not in the installable list: {unknown}")
     else:
         print()
         answer = input(_msg(lang, "select_prompt")).strip().lower()
         if answer in ("a", "all"):
-            targets = installable
+            targets = selectable
         elif answer in ("", "n", "none"):
             targets = []
         else:
             try:
                 indices = [int(x.strip()) for x in answer.split(",") if x.strip()]
-                targets = [installable[i - 1] for i in indices]
+                targets = [selectable[i - 1] for i in indices]
             except (ValueError, IndexError):
                 sys.exit("Error: could not parse selection")
 
@@ -1124,8 +1234,24 @@ def cmd_apply(args) -> None:
     if not args.scope:
         sys.exit(_msg(lang, "scope_required"))
 
+    # Cache each marketplace's add outcome (None = succeeded) — dedup so
+    # two plugins from the same new marketplace only trigger one `add`.
+    add_results = {}
     ok = fail = 0
     for pid in targets:
+        _, _, marketplace = pid.partition("@")
+        if marketplace in addable_sources:
+            if marketplace not in add_results:
+                source = addable_sources[marketplace]
+                print(_msg(lang, "adding_marketplace", name=marketplace, source=source))
+                code, out, err = run_claude(["plugin", "marketplace", "add", source, "--scope", args.scope])
+                add_results[marketplace] = None if code == 0 else (out + err).strip()
+            add_error = add_results[marketplace]
+            if add_error is not None:
+                fail += 1
+                print(f"  {pid}: skipped — marketplace add failed: {add_error}")
+                continue
+
         print(_msg(lang, "installing", id=pid, scope=args.scope))
         code, out, err = run_claude(["plugin", "install", pid, "-s", args.scope, "-y"])
         if code == 0:

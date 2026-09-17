@@ -9,12 +9,13 @@
 ### 🚀 Feature
 - `gist-list`: list gists this tool created (tagged `claude-plugin-skill-sync snapshots`) without opening a browser. `resolve_gist_id` now auto-discovers the shared gist when there's no `--gist-id`, no env var, and no cached marker — exactly one match is used and cached automatically, two or more is an error pointing at `gist-list`. Removes the manual "copy the id from machine A, paste on machine B" step for the common single-shared-gist case. (#9)
 - README: full step-by-step two-machine save → upload → fetch → merge → apply → update walkthrough. (#9)
+- `save` now also captures each configured marketplace's portable source (`repo` for a GitHub-sourced marketplace, `url` for a git one — never the local `installLocation`), and `merge` carries it into the merged view. `apply -y` uses it to run `claude plugin marketplace add` automatically for a plugin whose marketplace isn't on this machine yet, before installing — so a snapshot can actually bootstrap a brand-new machine with zero marketplaces configured, not just one that already has every source added. A marketplace whose only recorded source is a local path (not portable) still gets skipped with an explanation. (#10)
 
 ### 🐛 Fix
 - `update` / `uninstall`: plugins with `scope: "synced"` (pulled from a claude.ai account, no local marketplace backing) are now skipped with a clear message instead of failing with a generic "Invalid scope" error — see VERIFIED_FACTS.md.
 
 ### Tests
-187 tests (up from 170), all subprocess calls mocked.
+212 tests (up from 170), all subprocess calls mocked.
 
 ## [unreleased] 2026-09-16
 

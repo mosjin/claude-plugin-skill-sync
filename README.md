@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#环境要求)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#测试)
+[![Tests](https://img.shields.io/badge/tests-212%20passing-brightgreen)](#测试)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#跨平台)
 
 [English](README.en.md)
@@ -48,8 +48,9 @@
 | **跨机同步** | `save` → `merge` → `apply`，一键补装本机缺的插件 |
 | **脱敏快照** | `identity`/`machine` 必须是标签，**不能填真实邮箱或主机名** |
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
-| **只装认识的** | 目标机器没加对应 marketplace 的插件，只列出跳过，**绝不瞎猜安装** |
-| **187 项测试** | 全 mock，测试不碰真实插件 |
+| **全新机器也能装** | 快照连插件的 marketplace 源（GitHub repo / git url）一起记，`apply -y` 自动帮你 `marketplace add` |
+| **只装认识源的** | 没记录到可用源（比如本地路径添加的 marketplace）的插件，只列出跳过，**绝不瞎猜安装** |
+| **212 项测试** | 全 mock，测试不碰真实插件 |
 
 ## 快速上手（新手向）
 
@@ -105,6 +106,16 @@ python plugin_manager.py apply merged.json --all -y --scope user
 # ⑦ 机器 B —— 把所有插件（含刚补装的）都更新到最新版本
 python plugin_manager.py update --all
 ```
+
+即使机器 B 是台全新电脑、一个 marketplace 都没加过也没关系：快照里连插件的
+marketplace 源（GitHub repo 或 git url）都记了，`apply -y` 会自动先
+`marketplace add` 再装插件，不用你手动一个个加源。只有源本身就是本地路径
+（没法跨机器复用）的 marketplace 才会被跳过，提示手动处理。
+
+> **独立 skill 不在 `apply` 管辖范围**：打包在 plugin 里的 skill 会随插件一起装好，
+> 不用额外操作；但单独放在 `~/.claude/skills/` 或项目 `.claude/skills/`、不属于
+> 任何 plugin 的「独立 skill」，快照里只记名字用于 `merge` 时看差异，**不会**被
+> `apply` 安装或搬过去 —— 这类 skill 目前只能自己手动同步。
 
 之后想反向同步（机器 B 装的东西同步回机器 A）？在机器 B 上 `save` + `upload`
 即可 —— 这时 `.gist_id` 已经缓存过，会直接把新快照加进同一个 gist，不会另建一个；
@@ -253,8 +264,9 @@ python plugin_manager.py fetch --gist-id <id>
 
 # 把合并视图里「本机缺的」装上。默认 dry-run 预览；
 # 加 -y（须同时给 --scope）才真正安装。
-# 只有本机已经加过对应 marketplace 的插件才能被装 ——
-# 其余的只列出来跳过，不瞎猜。
+# 三种情况：① 本机已有对应 marketplace —— 直接装；
+# ② 本机没有，但快照记了 GitHub repo / git url —— -y 时自动先加源再装；
+# ③ 两者都没有（比如源是本地路径）—— 只列出来跳过，不瞎猜。
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # 中文提示
 ```
@@ -301,7 +313,7 @@ python bootstrap_tools.py --check  # 只报状态，不装
 python -m pytest tests/ -v
 ```
 
-187 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
+212 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
 
 ## 跨平台
 

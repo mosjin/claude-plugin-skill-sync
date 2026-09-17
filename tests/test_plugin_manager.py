@@ -763,6 +763,61 @@ class TestWhitelistPlugin(unittest.TestCase):
         self.assertEqual(record["mcp_server_names"], [])
 
 
+class TestWhitelistMarketplace(unittest.TestCase):
+    def test_github_source_keeps_repo(self):
+        m = {"name": "caveman", "source": "github", "repo": "JuliusBrussee/caveman", "installLocation": "C:\\Users\\mosjin\\x"}
+        self.assertEqual(
+            plugin_manager.whitelist_marketplace(m),
+            {"name": "caveman", "source": "github", "repo": "JuliusBrussee/caveman"},
+        )
+
+    def test_git_source_keeps_url(self):
+        m = {"name": "ecc", "source": "git", "url": "https://github.com/affaan-m/ECC.git", "installLocation": "/home/mosjin/x"}
+        self.assertEqual(
+            plugin_manager.whitelist_marketplace(m),
+            {"name": "ecc", "source": "git", "url": "https://github.com/affaan-m/ECC.git"},
+        )
+
+    def test_install_location_never_kept(self):
+        m = {"name": "caveman", "source": "github", "repo": "JuliusBrussee/caveman", "installLocation": "C:\\Users\\mosjin\\x"}
+        blob = json.dumps(plugin_manager.whitelist_marketplace(m))
+        self.assertNotIn("installLocation", blob)
+        self.assertNotIn("mosjin", blob)
+
+    def test_unknown_source_keeps_name_and_source_only(self):
+        """A marketplace added from a local path (or any future source
+        type) has nothing portable to record — but name+source still lets
+        `apply` explain why it can't auto-add this one, instead of the
+        marketplace silently vanishing from the snapshot."""
+        m = {"name": "my-local", "source": "directory", "installLocation": "/home/mosjin/skills/my-local"}
+        self.assertEqual(plugin_manager.whitelist_marketplace(m), {"name": "my-local", "source": "directory"})
+
+    def test_missing_name_returns_none(self):
+        self.assertIsNone(plugin_manager.whitelist_marketplace({"source": "github", "repo": "x/y"}))
+
+    def test_missing_source_returns_none(self):
+        self.assertIsNone(plugin_manager.whitelist_marketplace({"name": "x"}))
+
+
+class TestListMarketplaces(unittest.TestCase):
+    def test_returns_parsed_list(self):
+        payload = json.dumps([{"name": "caveman", "source": "github", "repo": "a/b", "installLocation": "/x"}])
+        with patch("plugin_manager.run_claude", return_value=(0, payload, "")) as mock:
+            result = plugin_manager.list_marketplaces()
+        mock.assert_called_once_with(["plugin", "marketplace", "list", "--json"])
+        self.assertEqual(result[0]["name"], "caveman")
+
+    def test_cli_failure_exits(self):
+        with patch("plugin_manager.run_claude", return_value=(1, "", "boom")):
+            with self.assertRaises(SystemExit):
+                plugin_manager.list_marketplaces()
+
+    def test_non_list_response_exits(self):
+        with patch("plugin_manager.run_claude", return_value=(0, "{}", "")):
+            with self.assertRaises(SystemExit):
+                plugin_manager.list_marketplaces()
+
+
 class TestScanSkills(unittest.TestCase):
     def test_finds_skill_dirs_with_skill_md(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -848,7 +903,8 @@ class TestDiscoverSkillRoots(unittest.TestCase):
 class TestCaptureSnapshot(unittest.TestCase):
     def test_builds_full_schema(self):
         with patch("plugin_manager.discover_skill_roots", return_value=[]):
-            snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
+            with patch("plugin_manager.list_marketplaces", return_value=[]):
+                snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
         self.assertEqual(snapshot["schema_version"], plugin_manager.SNAPSHOT_SCHEMA_VERSION)
         self.assertEqual(snapshot["kind"], "snapshot")
         self.assertEqual(snapshot["identity"], "mosjin")
@@ -856,6 +912,7 @@ class TestCaptureSnapshot(unittest.TestCase):
         self.assertEqual(snapshot["platform"], sys.platform)
         self.assertEqual(len(snapshot["plugins"]), 3)
         self.assertEqual(snapshot["skills"], [])
+        self.assertEqual(snapshot["marketplaces"], [])
 
     def test_aggregates_skills_across_roots(self):
         fake_roots = [("root-a", "user"), ("root-b", "plugin:caveman@caveman")]
@@ -867,8 +924,23 @@ class TestCaptureSnapshot(unittest.TestCase):
                     [{"name": "s2", "owner": "plugin:caveman@caveman"}],
                 ],
             ):
-                snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
+                with patch("plugin_manager.list_marketplaces", return_value=[]):
+                    snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
         self.assertEqual(len(snapshot["skills"]), 2)
+
+    def test_captures_whitelisted_marketplaces(self):
+        raw = [
+            {"name": "caveman", "source": "github", "repo": "JuliusBrussee/caveman", "installLocation": "C:\\Users\\mosjin\\.claude\\plugins\\marketplaces\\caveman"},
+            {"name": "ecc", "source": "git", "url": "https://github.com/affaan-m/ECC.git", "installLocation": "/home/mosjin/.claude/plugins/marketplaces/ecc"},
+        ]
+        with patch("plugin_manager.discover_skill_roots", return_value=[]):
+            with patch("plugin_manager.list_marketplaces", return_value=raw):
+                snapshot = plugin_manager.capture_snapshot("mosjin", "win-desktop", SAMPLE_PLUGINS)
+        self.assertEqual(snapshot["marketplaces"], [
+            {"name": "caveman", "source": "github", "repo": "JuliusBrussee/caveman"},
+            {"name": "ecc", "source": "git", "url": "https://github.com/affaan-m/ECC.git"},
+        ])
+        self.assertNotIn("mosjin", json.dumps(snapshot["marketplaces"]))
 
 
 class TestSnapshotFilename(unittest.TestCase):
@@ -911,8 +983,9 @@ class TestCmdSave(unittest.TestCase):
             out_dir = Path(tmp) / "snaps"
             with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
                 with patch("plugin_manager.discover_skill_roots", return_value=[]):
-                    with patch("sys.stdout", new_callable=StringIO):
-                        plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
+                    with patch("plugin_manager.list_marketplaces", return_value=[]):
+                        with patch("sys.stdout", new_callable=StringIO):
+                            plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
             files = list(out_dir.glob("*.json"))
             self.assertEqual(len(files), 1)
             data = json.loads(files[0].read_text(encoding="utf-8"))
@@ -924,9 +997,10 @@ class TestCmdSave(unittest.TestCase):
             out_dir = Path(tmp) / "snaps"
             with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
                 with patch("plugin_manager.discover_skill_roots", return_value=[]):
-                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
-                        plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
-                    output = mock_out.getvalue()
+                    with patch("plugin_manager.list_marketplaces", return_value=[]):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            plugin_manager.cmd_save(self._args(dir_=str(out_dir)))
+                        output = mock_out.getvalue()
         self.assertNotIn("Warning", output)
 
     def test_warns_when_using_default_dir(self):
@@ -936,10 +1010,11 @@ class TestCmdSave(unittest.TestCase):
             try:
                 with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
                     with patch("plugin_manager.discover_skill_roots", return_value=[]):
-                        with patch.dict("os.environ", {}, clear=True):
-                            with patch("sys.stdout", new_callable=StringIO) as mock_out:
-                                plugin_manager.cmd_save(self._args(dir_=None))
-                            output = mock_out.getvalue()
+                        with patch("plugin_manager.list_marketplaces", return_value=[]):
+                            with patch.dict("os.environ", {}, clear=True):
+                                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                                    plugin_manager.cmd_save(self._args(dir_=None))
+                                output = mock_out.getvalue()
             finally:
                 os.chdir(cwd)
         self.assertIn("Warning", output)
@@ -953,8 +1028,9 @@ class TestCmdSave(unittest.TestCase):
             out_dir = Path(tmp) / "snaps"
             with patch("plugin_manager.list_plugins", return_value=[LEAKY_PLUGIN]):
                 with patch("plugin_manager.discover_skill_roots", return_value=[]):
-                    with patch("sys.stdout", new_callable=StringIO):
-                        plugin_manager.cmd_save(self._args(identity="tester", dir_=str(out_dir)))
+                    with patch("plugin_manager.list_marketplaces", return_value=[]):
+                        with patch("sys.stdout", new_callable=StringIO):
+                            plugin_manager.cmd_save(self._args(identity="tester", dir_=str(out_dir)))
             written = (out_dir / os.listdir(out_dir)[0]).read_text(encoding="utf-8")
         self.assertNotIn(LEAKY_PLUGIN["installPath"], written)
         self.assertNotIn("mosjin", written)  # the username baked into LEAKY_PLUGIN's path
@@ -1080,6 +1156,31 @@ class TestMergeSnapshots(unittest.TestCase):
     def test_skills_merged_across_machines(self):
         merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertIn("user/api-design", merged["skills"])
+
+    def test_snapshot_without_marketplaces_field_still_merges(self):
+        """SNAP_MACHINE_A/B predate this field — old snapshots (or ones
+        just fetched from a gist saved before this feature) must not
+        crash merge."""
+        merged = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(merged["marketplaces"], {})
+
+    def test_marketplaces_merged_across_machines(self):
+        a = dict(SNAP_MACHINE_A, marketplaces=[{"name": "caveman", "source": "github", "repo": "a/b"}])
+        b = dict(SNAP_MACHINE_B, marketplaces=[{"name": "caveman", "source": "github", "repo": "a/b"}])
+        merged = plugin_manager.merge_snapshots([a, b])
+        entry = merged["marketplaces"]["caveman"]
+        self.assertEqual(set(entry["present_on"]), {"win-desktop@win32", "linux-box@linux"})
+        self.assertEqual(entry["drift"], [])
+        self.assertEqual(entry["source_record"], {"source": "github", "repo": "a/b"})
+
+    def test_marketplace_source_drift_detected(self):
+        """Two machines recording different sources for the same
+        marketplace name is a real conflict `apply` needs to know about,
+        not silently averaged away."""
+        a = dict(SNAP_MACHINE_A, marketplaces=[{"name": "caveman", "source": "github", "repo": "old/repo"}])
+        b = dict(SNAP_MACHINE_B, marketplaces=[{"name": "caveman", "source": "github", "repo": "new/repo"}])
+        merged = plugin_manager.merge_snapshots([a, b])
+        self.assertEqual(merged["marketplaces"]["caveman"]["drift"], ["source"])
 
     def test_idempotent_same_input_same_output(self):
         first = plugin_manager.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
@@ -1657,6 +1758,69 @@ class TestMissingPluginIds(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestAddableMarketplaceSource(unittest.TestCase):
+    def test_github_record_returns_repo(self):
+        self.assertEqual(
+            plugin_manager.addable_marketplace_source({"source": "github", "repo": "a/b"}),
+            "a/b",
+        )
+
+    def test_git_record_returns_url(self):
+        self.assertEqual(
+            plugin_manager.addable_marketplace_source({"source": "git", "url": "https://x/y.git"}),
+            "https://x/y.git",
+        )
+
+    def test_unknown_source_returns_none(self):
+        self.assertIsNone(plugin_manager.addable_marketplace_source({"source": "directory"}))
+
+    def test_empty_record_returns_none(self):
+        self.assertIsNone(plugin_manager.addable_marketplace_source({}))
+
+
+class TestClassifyMissingPlugins(unittest.TestCase):
+    def test_local_marketplace_wins_over_merged_source(self):
+        """Already-local beats "would need to add" even if the merged view
+        also has a portable source for it — no point re-adding what's
+        already here."""
+        merged_marketplaces = {"caveman": {"source_record": {"source": "github", "repo": "a/b"}}}
+        installable, addable, skipped, sources = plugin_manager.classify_missing_plugins(
+            ["caveman@caveman"], {"caveman": Path("/local")}, merged_marketplaces
+        )
+        self.assertEqual(installable, ["caveman@caveman"])
+        self.assertEqual(addable, [])
+
+    def test_portable_source_goes_to_addable(self):
+        merged_marketplaces = {"caveman": {"source_record": {"source": "github", "repo": "a/b"}}}
+        installable, addable, skipped, sources = plugin_manager.classify_missing_plugins(
+            ["caveman@caveman"], {}, merged_marketplaces
+        )
+        self.assertEqual(addable, ["caveman@caveman"])
+        self.assertEqual(sources, {"caveman": "a/b"})
+
+    def test_no_source_on_record_goes_to_skipped(self):
+        installable, addable, skipped, sources = plugin_manager.classify_missing_plugins(
+            ["unknown@no-such-marketplace"], {}, {}
+        )
+        self.assertEqual(skipped, ["unknown@no-such-marketplace"])
+
+    def test_local_path_source_goes_to_skipped_not_addable(self):
+        """A marketplace whose only recorded source is a local directory
+        on the machine that saved the snapshot has nothing portable to
+        auto-add here."""
+        merged_marketplaces = {"my-local": {"source_record": {"source": "directory"}}}
+        installable, addable, skipped, sources = plugin_manager.classify_missing_plugins(
+            ["x@my-local"], {}, merged_marketplaces
+        )
+        self.assertEqual(skipped, ["x@my-local"])
+        self.assertEqual(addable, [])
+
+
+MERGED_FIXTURE_WITH_ADDABLE = dict(MERGED_FIXTURE, marketplaces={
+    "caveman": {"source_record": {"source": "github", "repo": "JuliusBrussee/caveman"}},
+})
+
+
 class TestCmdApply(unittest.TestCase):
     def _args(self, merged_file, plugins=None, all_=False, yes=False, scope=None, lang=None):
         class Args:
@@ -1791,6 +1955,92 @@ class TestCmdApply(unittest.TestCase):
                     plugin_manager.cmd_apply(self._args(str(merged), lang="zh"))
                     output = mock_out.getvalue()
         self.assertIn("没有缺的插件", output)
+
+    def _write_addable_merged(self, tmp):
+        p = Path(tmp) / "merged.json"
+        p.write_text(json.dumps(MERGED_FIXTURE_WITH_ADDABLE), encoding="utf-8")
+        return p
+
+    def test_dry_run_shows_addable_without_calling_marketplace_add(self):
+        """Preview must never mutate machine state — adding a marketplace
+        is a real side effect, gated behind -y like everything else."""
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_addable_merged(tmp)
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", return_value=(0, "[]", "")) as mock:
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_apply(self._args(str(merged), all_=True))
+                        output = mock_out.getvalue()
+        self.assertIn("caveman@caveman", output)
+        self.assertIn("JuliusBrussee/caveman", output)
+        self.assertIn("Dry run", output)
+        calls = [c[0][0] for c in mock.call_args_list]
+        self.assertTrue(all(c[:3] != ["plugin", "marketplace", "add"] for c in calls))
+
+    def test_yes_adds_marketplace_then_installs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_addable_merged(tmp)
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", side_effect=[
+                    (0, "[]", ""),                       # marketplace list (none local)
+                    (0, "added", ""),                    # marketplace add
+                    (0, "installed", ""),                # plugin install
+                ]) as mock:
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_apply(self._args(str(merged), all_=True, yes=True, scope="user"))
+                        output = mock_out.getvalue()
+        calls = [c[0][0] for c in mock.call_args_list]
+        self.assertEqual(calls[1], ["plugin", "marketplace", "add", "JuliusBrussee/caveman", "--scope", "user"])
+        self.assertEqual(calls[2], ["plugin", "install", "caveman@caveman", "-s", "user", "-y"])
+        self.assertIn("Installed: 1", output)
+
+    def test_marketplace_add_failure_skips_its_plugins_not_others(self):
+        merged_fixture = dict(MERGED_FIXTURE_WITH_ADDABLE)
+        merged_fixture["plugins"] = dict(MERGED_FIXTURE["plugins"])
+        # give unknown@no-such-marketplace an addable source too, distinct
+        # from caveman's, so a failed add for one doesn't block the other
+        merged_fixture["marketplaces"] = dict(
+            MERGED_FIXTURE_WITH_ADDABLE["marketplaces"],
+            **{"no-such-marketplace": {"source_record": {"source": "github", "repo": "x/y"}}},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "merged.json"
+            p.write_text(json.dumps(merged_fixture), encoding="utf-8")
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", side_effect=[
+                    (0, "[]", ""),                                # marketplace list
+                    (1, "", "add failed: not found"),             # add caveman -> fails
+                    (0, "added", ""),                             # add no-such-marketplace -> succeeds
+                    (0, "installed", ""),                         # install unknown@no-such-marketplace
+                ]):
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        with self.assertRaises(SystemExit):
+                            plugin_manager.cmd_apply(self._args(str(p), all_=True, yes=True, scope="user"))
+                        output = mock_out.getvalue()
+        self.assertIn("add failed: not found", output)
+        self.assertIn("Installed: 1", output)
+        self.assertIn("Failed: 1", output)
+
+    def test_dedups_marketplace_add_across_two_plugins_same_marketplace(self):
+        merged_fixture = dict(MERGED_FIXTURE_WITH_ADDABLE)
+        merged_fixture["plugins"] = {
+            "caveman@caveman": MERGED_FIXTURE["plugins"]["caveman@caveman"],
+            "other@caveman": MERGED_FIXTURE["plugins"]["caveman@caveman"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "merged.json"
+            p.write_text(json.dumps(merged_fixture), encoding="utf-8")
+            with patch("plugin_manager.list_plugins", return_value=[]):
+                with patch("plugin_manager.run_claude", side_effect=[
+                    (0, "[]", ""),
+                    (0, "added", ""),
+                    (0, "installed", ""),
+                    (0, "installed", ""),
+                ]) as mock:
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_apply(self._args(str(p), all_=True, yes=True, scope="user"))
+        add_calls = [c[0][0] for c in mock.call_args_list if c[0][0][:3] == ["plugin", "marketplace", "add"]]
+        self.assertEqual(len(add_calls), 1)
 
 
 if __name__ == "__main__":

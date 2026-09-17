@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-212%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -52,8 +52,9 @@ surfaced (not managed) via [`doctor`](#commands).
 | **Cross-machine sync** | `save` → `merge` → `apply` installs whatever's missing on a machine |
 | **Desensitized snapshots** | `identity`/`machine` are required labels, **never a raw email or hostname** |
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
-| **Never guesses installs** | Plugins whose marketplace isn't on the target machine are listed and skipped, **not force-installed** |
-| **187 tests** | All mocked — real plugins are never touched during testing |
+| **Works on a fresh machine** | Snapshots record each plugin's marketplace source (GitHub repo / git url) too — `apply -y` runs `marketplace add` for you |
+| **Never guesses installs** | Plugins with no source on record (e.g. a marketplace added from a local path) are listed and skipped, **not force-installed** |
+| **212 tests** | All mocked — real plugins are never touched during testing |
 
 ## Quick Start (beginner-friendly)
 
@@ -113,6 +114,20 @@ python plugin_manager.py apply merged.json --all -y --scope user
 # ⑦ Machine B — bring everything (including what was just installed) up to date
 python plugin_manager.py update --all
 ```
+
+Even if machine B is a completely fresh install with zero marketplaces
+configured, this still works: the snapshot recorded each plugin's
+marketplace source (a GitHub repo or git url) too, so `apply -y` runs
+`marketplace add` for you before installing. Only a marketplace whose
+recorded source is a local path (not portable across machines) gets
+skipped with a note to add it by hand.
+
+> **Standalone skills aren't `apply`'s job**: a skill bundled inside a
+> plugin installs automatically along with that plugin. A "standalone"
+> skill — living directly under `~/.claude/skills/` or a project's
+> `.claude/skills/`, not part of any plugin — is only recorded by name in
+> a snapshot (for the `merge` drift view) and is **never** installed or
+> transferred by `apply`. Sync those by hand for now.
 
 Want to sync the other direction later (push what machine B has back to
 machine A)? `save` + `upload` on machine B — `.gist_id` is already cached
@@ -265,9 +280,12 @@ python plugin_manager.py upload snapshots/<file>.json
 python plugin_manager.py fetch --gist-id <id>
 
 # Install on this machine whatever the merged view shows is missing here.
-# Dry-run by default; -y (plus --scope) actually installs. Only plugins
-# whose marketplace is already added on this machine are installable —
-# others are listed and skipped, never guessed at.
+# Dry-run by default; -y (plus --scope) actually installs. Three cases:
+# 1) marketplace already here -> installs directly.
+# 2) not here, but the snapshot recorded a GitHub repo / git url for it
+#    -> -y runs `marketplace add` first, then installs.
+# 3) neither (e.g. its only recorded source is a local path) -> listed
+#    and skipped, never guessed at.
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # Chinese prompts
 ```
@@ -316,7 +334,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-187 tests, all subprocess calls mocked — no real plugins are modified during testing.
+212 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 
