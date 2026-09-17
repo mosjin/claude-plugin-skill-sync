@@ -17,17 +17,28 @@
 
 ## Table of Contents
 
+- [Requirements](#requirements)
+- [Cross-platform](#cross-platform)
 - [About](#about)
 - [Highlights](#highlights)
 - [Quick Start](#quick-start-beginner-friendly)
 - [Full Cross-Machine Sync Walkthrough](#full-cross-machine-sync-walkthrough)
 - [Commands](#commands)
-- [Requirements](#requirements)
 - [bootstrap_tools.py](#bootstrap_toolspy)
 - [Tests](#tests)
-- [Cross-platform](#cross-platform)
 
 ---
+
+## Requirements
+
+- Python 3.8+
+- `claude` CLI in PATH (Claude Code)
+
+No external dependencies — stdlib only.
+
+## Cross-platform
+
+Works on Windows, Linux, macOS. Uses `shutil.which` to locate `claude`/`claude.cmd`/`claude.exe`.
 
 ## About
 
@@ -93,7 +104,7 @@ whole thing, per machine:
 | Machine | Commands |
 |---|---|
 | **Source** (already has the plugins, wants another machine to match) | `save` → `upload` |
-| **Destination** (wants to sync in) | `fetch` → `diff` (optional — just a look at what differs) → `apply` |
+| **Destination** (wants to sync in) | `fetch` → `diff --out merged.json` → `apply` |
 
 Keep reading for the full commands plus real output from each step.
 
@@ -137,7 +148,9 @@ Fetched gist <gist_id>: 1 snapshot(s) found, 1 new one(s) copied into snapshots
 ```
 
 ```bash
-# On dest: compare both snapshots (read-only — installs nothing)
+# On dest: generate the diff view — apply needs its output file, this
+# step can't be skipped (the table it prints below is read-only and
+# fine to skip reading)
 python plugin_manager.py diff --dir snapshots --out merged.json
 ```
 ```
@@ -388,13 +401,6 @@ Gist ID                           Visibility  Files      Updated
 Use one with: fetch --gist-id <id>  (or upload --gist-id <id>)
 ```
 
-## Requirements
-
-- Python 3.8+
-- `claude` CLI in PATH (Claude Code)
-
-No external dependencies — stdlib only.
-
 ## bootstrap_tools.py
 
 Separate script: installs the standalone CLI binaries (`rtk`, `gh-asset`,
@@ -415,15 +421,3 @@ python -m pytest tests/ -v
 ```
 
 243 tests, all subprocess calls mocked — no real plugins are modified during testing.
-
-## Cross-platform
-
-Works on Windows, Linux, macOS. Uses `shutil.which` to locate `claude`/`claude.cmd`/`claude.exe`.
-
----
-
-<div align="center">
-
-[中文 README](README.md)
-
-</div>

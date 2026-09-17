@@ -17,17 +17,28 @@
 
 ## 目录
 
+- [环境要求](#环境要求)
+- [跨平台](#跨平台)
 - [关于本项目](#关于本项目)
 - [核心亮点](#核心亮点)
 - [快速上手](#快速上手新手向)
 - [跨机同步完整流程](#跨机同步完整流程)
 - [命令一览](#命令一览)
-- [环境要求](#环境要求)
 - [bootstrap_tools.py](#bootstrap_toolspy)
 - [测试](#测试)
-- [跨平台](#跨平台)
 
 ---
+
+## 环境要求
+
+- Python 3.8+
+- PATH 中有 `claude` CLI（Claude Code 本体）
+
+无第三方依赖 —— 只用标准库。
+
+## 跨平台
+
+Windows / Linux / macOS 均可用。用 `shutil.which` 定位 `claude`/`claude.cmd`/`claude.exe`。
 
 ## 关于本项目
 
@@ -71,12 +82,6 @@ python plugin_manager.py update --all
 只用单台机器？到这两步就够了。想在多台机器间同步插件，看下一节的完整流程。
 
 ## 跨机同步完整流程
-
-> **这里的命令名字借用了 git 的词汇，但语义不完全一样**：`fetch` 确实跟
-> `git fetch` 一样，把远端数据拉到本地；但 `diff` **不是** `git merge`——它
-> 只对比、不改任何文件，纯只读报告。真正"把差异应用到本地"这一步是 `apply`，
-> 是它,不是 `diff`,也不是 `update`（`update` 只管本机已装插件升到各自最新版，
-> 跟这套同步系统完全无关）。
 
 ### 典型用法速览
 
@@ -130,7 +135,8 @@ $ python plugin_manager.py fetch --dir snapshots
 Fetched gist <gist_id>: 1 snapshot(s) found, 1 new one(s) copied into snapshots
 ```
 
-**在 dest 上：（可选）对比两份快照，看看会发生什么**（只读，不装任何东西）
+**在 dest 上：生成差异视图**（`apply` 要用它的产出文件，这条命令跳不过去；
+下面这份对比表格只读、不装任何东西，不想细看也没关系）
 ```bash
 $ python plugin_manager.py diff --dir snapshots --out merged.json
 Identity: mosjin
@@ -360,13 +366,6 @@ Gist ID                           Visibility  Files      Updated
 Use one with: fetch --gist-id <id>  (or upload --gist-id <id>)
 ```
 
-## 环境要求
-
-- Python 3.8+
-- PATH 中有 `claude` CLI（Claude Code 本体）
-
-无第三方依赖 —— 只用标准库。
-
 ## bootstrap_tools.py
 
 独立脚本，装 `~/.claude` hooks/规则依赖但非 plugin 形式的 CLI 二进制
@@ -386,15 +385,3 @@ python -m pytest tests/ -v
 ```
 
 243 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
-
-## 跨平台
-
-Windows / Linux / macOS 均可用。用 `shutil.which` 定位 `claude`/`claude.cmd`/`claude.exe`。
-
----
-
-<div align="center">
-
-[English README](README.en.md)
-
-</div>
