@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-212%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -54,7 +54,7 @@ surfaced (not managed) via [`doctor`](#commands).
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
 | **Works on a fresh machine** | Snapshots record each plugin's marketplace source (GitHub repo / git url) too — `apply -y` runs `marketplace add` for you |
 | **Never guesses installs** | Plugins with no source on record (e.g. a marketplace added from a local path) are listed and skipped, **not force-installed** |
-| **212 tests** | All mocked — real plugins are never touched during testing |
+| **221 tests** | All mocked — real plugins are never touched during testing |
 
 ## Quick Start (beginner-friendly)
 
@@ -84,7 +84,10 @@ extra id typed in — every other step is copy-paste.
 python plugin_manager.py save --identity mosjin --machine work-laptop
 
 # ② Machine A — upload it to a GitHub Gist
-#    First upload auto-creates a secret gist, caches its id in snapshots/.gist_id
+#    First upload auto-creates a secret gist, caches its id in snapshots/.gist_id.
+#    Uploading again from this machine later replaces its previous snapshot
+#    in the gist by default (no unbounded pile-up); pass --keep-history to
+#    keep every upload instead.
 python plugin_manager.py upload snapshots/<file>.json
 ```
 
@@ -276,7 +279,10 @@ python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
 # snapshot dir; later uploads/fetches in that dir reuse it automatically.
 # No cache, no --gist-id: exactly one gist this tool created on the account
 # is used automatically; more than one is an error pointing at gist-list.
+# Uploading again from the same machine replaces its previous snapshot in
+# the gist by default — no unbounded pile-up. Keep every upload instead:
 python plugin_manager.py upload snapshots/<file>.json
+python plugin_manager.py upload snapshots/<file>.json --keep-history
 python plugin_manager.py fetch --gist-id <id>
 
 # Install on this machine whatever the merged view shows is missing here.
@@ -334,7 +340,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-212 tests, all subprocess calls mocked — no real plugins are modified during testing.
+221 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 

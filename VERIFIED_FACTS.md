@@ -28,8 +28,8 @@
 - **Verified by**: me, reading CLI help directly.
 - **Invalidated by**: a `gh` CLI update changing gist defaults or the clone command's shape.
 
-### plugin_manager.py test suite is green at 212 tests as of the marketplace-source-in-snapshot feature
-- **Fact**: `python -m pytest tests/ -q` → 212 passed, 0 failed (170 at commit `4e3b19e`, +7 synced-scope skip fix, +10 gist-list/auto-discovery, +25 marketplace source capture/merge/apply auto-add).
+### plugin_manager.py test suite is green at 221 tests as of the upload-overwrite feature
+- **Fact**: `python -m pytest tests/ -q` → 221 passed, 0 failed (170 at commit `4e3b19e`, +7 synced-scope skip fix, +10 gist-list/auto-discovery, +25 marketplace source capture/merge/apply auto-add, +9 upload overwrite/--keep-history).
 - **Verified on**: 2026-09-17
 - **Evidence**: local pytest run output in this session.
 - **Verified by**: me, running the suite directly.
@@ -41,6 +41,13 @@
 - **Evidence**: live `claude plugin marketplace list --json` on this machine; live `claude plugin marketplace add JuliusBrussee/caveman --scope local` and `claude plugin marketplace add https://github.com/affaan-m/ECC.git --scope local` (both exit 0, both idempotent) from a throwaway temp cwd.
 - **Verified by**: me, running all three directly.
 - **Invalidated by**: a future `claude` CLI release changing the `marketplace list --json` field names/shapes, or making `marketplace add` require interactive confirmation.
+
+### A gist can't be edited down to zero files; `gh gist edit` also refuses `--add` and `--remove` together — replace-in-place must be add-then-remove, two calls
+- **Fact**: `gh gist edit <id> --remove <only-remaining-file>` (alone) fails with `HTTP 422: Validation Failed ... Gist.files is missing` — GitHub requires at least one file after any edit. `gh gist edit <id> --add <x> --remove <y>` in one invocation fails at the CLI level with `if any flags in the group [add remove] are set none of the others can be`. Doing `--add <new>` first (now 2 files), then `--remove <old>` (back to 1) works cleanly.
+- **Verified on**: 2026-09-17
+- **Evidence**: live repro against this project's real sync gist (`1cd6200ecc8a99f2cf03d59954bda507`) — the failing remove-first order, the failing combined-flags order, then the working add-then-remove order, in that sequence, on gh 2.89.0.
+- **Verified by**: me, running all three directly.
+- **Invalidated by**: a future `gh`/GitHub API change allowing a temporarily-empty gist or a combined add+remove edit.
 
 ### `gh gist list` has no `--json` flag — output is fixed-column TSV, one gist per line
 - **Fact**: columns are `id\tdescription\tfile-count\tvisibility\tupdated-timestamp` (e.g. `1cd6200ecc8a99f2cf03d59954bda507\tclaude-plugin-skill-sync snapshots\t1 file\tsecret\t2026-09-17T00:34:47Z`). `--filter <regex>` matches against description/filenames (and content with `--include-content`), so tagging every gist this tool creates with a fixed description (`upload`'s `-d` flag) makes `--filter <that description>` a reliable way to find only this tool's gists.

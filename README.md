@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#环境要求)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-212%20passing-brightgreen)](#测试)
+[![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)](#测试)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#跨平台)
 
 [English](README.en.md)
@@ -50,7 +50,7 @@
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
 | **全新机器也能装** | 快照连插件的 marketplace 源（GitHub repo / git url）一起记，`apply -y` 自动帮你 `marketplace add` |
 | **只装认识源的** | 没记录到可用源（比如本地路径添加的 marketplace）的插件，只列出跳过，**绝不瞎猜安装** |
-| **212 项测试** | 全 mock，测试不碰真实插件 |
+| **221 项测试** | 全 mock，测试不碰真实插件 |
 
 ## 快速上手（新手向）
 
@@ -79,7 +79,9 @@ python plugin_manager.py update --all
 python plugin_manager.py save --identity mosjin --machine work-laptop
 
 # ② 机器 A —— 上传到 GitHub Gist
-#    首次上传自动建一个 secret gist，id 缓存进 snapshots/.gist_id
+#    首次上传自动建一个 secret gist，id 缓存进 snapshots/.gist_id。
+#    以后在这台机器上再传，默认会把这台机器的旧快照顶替掉（不无限堆积）；
+#    想留历史每次都加一份，传 --keep-history。
 python plugin_manager.py upload snapshots/<file>.json
 ```
 
@@ -259,7 +261,10 @@ python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
 # 同目录下后续 upload/fetch 会自动复用这个 id。
 # 没缓存、没传 --gist-id 时：账号下只有一个本工具建的 gist 就自动用它；
 # 有不止一个就报错，提示先用 gist-list 看一眼再指定 --gist-id。
+# 默认覆盖式上传：同一台机器再传一次会把 gist 里这台机器的旧快照删掉，
+# 只留最新这份，不会无限堆积。想保留每次上传的历史，加 --keep-history。
 python plugin_manager.py upload snapshots/<file>.json
+python plugin_manager.py upload snapshots/<file>.json --keep-history   # 不删旧的，纯累加
 python plugin_manager.py fetch --gist-id <id>
 
 # 把合并视图里「本机缺的」装上。默认 dry-run 预览；
@@ -313,7 +318,7 @@ python bootstrap_tools.py --check  # 只报状态，不装
 python -m pytest tests/ -v
 ```
 
-212 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
+221 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
 
 ## 跨平台
 

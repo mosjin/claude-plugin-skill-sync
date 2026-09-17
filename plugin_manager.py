@@ -602,6 +602,16 @@ def capture_snapshot(identity: str, machine: str, all_plugins: list) -> dict:
     }
 
 
+def _snapshot_machine_prefix(snapshot: dict) -> str:
+    """The filename prefix every save for one machine shares — reused by
+    snapshot_filename() below and by `upload` to find that machine's own
+    older snapshot files sitting in a shared gist (see
+    find_stale_gist_snapshots), so uploads don't accumulate one file
+    forever per save.
+    """
+    return f"{snapshot['identity']}__{snapshot['machine']}__{snapshot['platform']}__"
+
+
 def snapshot_filename(snapshot: dict) -> str:
     """identity/machine are already sanitized by resolve_identity/
     resolve_machine — reused as-is so the filename and the JSON body never
@@ -610,10 +620,7 @@ def snapshot_filename(snapshot: dict) -> str:
     time of day `captured_at` was deliberately coarsened to hide.
     """
     token = secrets.token_hex(4)
-    return (
-        f"{snapshot['identity']}__{snapshot['machine']}__"
-        f"{snapshot['platform']}__{snapshot['captured_at']}__{token}.json"
-    )
+    return f"{_snapshot_machine_prefix(snapshot)}{snapshot['captured_at']}__{token}.json"
 
 
 def cmd_save(args) -> None:
@@ -971,6 +978,28 @@ def _is_valid_snapshot_file(path: Path) -> bool:
     )
 
 
+def list_gist_files(gist_id: str) -> list:
+    """Filenames currently in a gist. Backs `upload`'s stale-snapshot
+    cleanup below — needs to know what's already there before deciding
+    what (if anything) to remove.
+    """
+    code, out, err = run_gh(["gist", "view", gist_id, "--files"])
+    if code != 0:
+        sys.exit(f"Error listing files in gist {gist_id}: {_clean_gh_error(out, err, code)}")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def find_stale_gist_snapshots(gist_files: list, snapshot: dict, new_filename: str) -> list:
+    """Which of a gist's current files are THIS machine's own older
+    snapshots — same identity/machine/platform prefix as the one about to
+    be uploaded, excluding the new file itself. `upload` removes these
+    before adding the new one so a shared gist ends up with one snapshot
+    per machine instead of accumulating every save forever.
+    """
+    prefix = _snapshot_machine_prefix(snapshot)
+    return [name for name in gist_files if name.startswith(prefix) and name != new_filename]
+
+
 def cmd_upload(args) -> None:
     file_path = Path(args.file)
     if not file_path.is_file():
@@ -985,10 +1014,27 @@ def cmd_upload(args) -> None:
     snapshot_dir = resolve_snapshot_dir(args)
     gist_id = resolve_gist_id(args, snapshot_dir)
     if gist_id:
+        stale = []
+        if not args.keep_history:
+            snapshot = json.loads(file_path.read_text(encoding="utf-8"))
+            stale = find_stale_gist_snapshots(list_gist_files(gist_id), snapshot, file_path.name)
+
+        # Add before remove, never the reverse: a gist can't have zero
+        # files, so removing this machine's last remaining snapshot before
+        # the new one is added fails GitHub's own validation
+        # ("Gist.files is missing", verified live — see VERIFIED_FACTS.md).
+        # `gh gist edit` also refuses --add and --remove in the same
+        # invocation, so this has to be two calls, in this order.
         code, out, err = run_gh(["gist", "edit", gist_id, "--add", str(file_path)])
         if code != 0:
             sys.exit(f"Error uploading to gist {gist_id}: {_clean_gh_error(out, err, code)}")
         print(f"Uploaded {file_path.name} to gist {gist_id}")
+
+        for name in stale:
+            code, out, err = run_gh(["gist", "edit", gist_id, "--remove", name])
+            if code != 0:
+                sys.exit(f"Error removing superseded snapshot {name} from gist {gist_id}: {_clean_gh_error(out, err, code)}")
+            print(f"Removed superseded snapshot {name} from gist {gist_id}")
     else:
         code, out, err = run_gh(["gist", "create", str(file_path), "-d", SNAPSHOT_GIST_DESCRIPTION])
         if code != 0:
@@ -1313,6 +1359,11 @@ def main() -> None:
     upload.add_argument(
         "--dir",
         help=f"Snapshot dir this gist is paired with, for caching the id (default: ${ENV_SNAPSHOT_DIR} or ./{DEFAULT_SNAPSHOT_DIR})",
+    )
+    upload.add_argument(
+        "--keep-history",
+        action="store_true",
+        help="Don't remove this machine's older snapshots from the gist — keep every upload instead of overwriting",
     )
 
     fetch = sub.add_parser("fetch", help="Fetch snapshots from a GitHub Gist into the local snapshot dir")

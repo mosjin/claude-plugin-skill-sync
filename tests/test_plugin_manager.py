@@ -1485,13 +1485,14 @@ class TestCmdGistList(unittest.TestCase):
 
 
 class TestCmdUpload(unittest.TestCase):
-    def _args(self, file, gist_id=None, dir_=None):
+    def _args(self, file, gist_id=None, dir_=None, keep_history=False):
         class Args:
             pass
         a = Args()
         a.file = file
         a.gist_id = gist_id
         a.dir = dir_
+        a.keep_history = keep_history
         return a
 
     def _write_snapshot(self, tmp, name="a.json"):
@@ -1513,9 +1514,10 @@ class TestCmdUpload(unittest.TestCase):
     def test_adds_to_existing_gist_exact_argv_no_public_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             snap = self._write_snapshot(tmp)
-            with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
-                with patch("sys.stdout", new_callable=StringIO):
-                    plugin_manager.cmd_upload(self._args(str(snap), gist_id="existing123", dir_=tmp))
+            with patch("plugin_manager.list_gist_files", return_value=[]):
+                with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_upload(self._args(str(snap), gist_id="existing123", dir_=tmp))
         mock.assert_called_once_with(["gist", "edit", "existing123", "--add", str(snap)])
         self.assertNotIn("--public", mock.call_args[0][0])
 
@@ -1539,9 +1541,10 @@ class TestCmdUpload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / ".gist_id").write_text("cached999", encoding="utf-8")
             snap = self._write_snapshot(tmp, "b.json")
-            with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
-                with patch("sys.stdout", new_callable=StringIO):
-                    plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
+            with patch("plugin_manager.list_gist_files", return_value=[]):
+                with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
         mock.assert_called_once_with(["gist", "edit", "cached999", "--add", str(snap)])
 
     def test_gh_failure_exits_with_real_message(self):
@@ -1551,6 +1554,93 @@ class TestCmdUpload(unittest.TestCase):
                 with self.assertRaises(SystemExit) as ctx:
                     plugin_manager.cmd_upload(self._args(str(snap), gist_id="bad-id", dir_=tmp))
         self.assertIn("not found", str(ctx.exception))
+
+    def test_removes_this_machines_stale_snapshots_after_adding(self):
+        """Default behavior: uploading again from the same machine
+        overwrites (adds the new file, then removes the old one(s))
+        instead of accumulating one file per save forever. Add must
+        happen first — a gist can't have zero files, so removing the
+        last remaining file before the replacement exists would fail
+        GitHub's own validation (verified live)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp, "new.json")
+            gist_files = [
+                "mosjin__m__win32__2026-09-01__aaaa1111.json",   # stale, same machine
+                "mosjin__other-machine__linux__2026-09-01__bb.json",  # different machine
+                "new.json",  # the file about to be added itself
+            ]
+            with patch("plugin_manager.list_gist_files", return_value=gist_files):
+                with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_upload(self._args(str(snap), gist_id="g1", dir_=tmp))
+                        output = mock_out.getvalue()
+        calls = [c[0][0] for c in mock.call_args_list]
+        self.assertEqual(calls[0], ["gist", "edit", "g1", "--add", str(snap)])
+        self.assertIn(["gist", "edit", "g1", "--remove", "mosjin__m__win32__2026-09-01__aaaa1111.json"], calls)
+        self.assertNotIn(["gist", "edit", "g1", "--remove", "mosjin__other-machine__linux__2026-09-01__bb.json"], calls)
+        self.assertIn("Removed superseded snapshot", output)
+
+    def test_keep_history_skips_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp, "new.json")
+            with patch("plugin_manager.list_gist_files") as mock_list:
+                with patch("plugin_manager.run_gh", return_value=(0, "", "")) as mock:
+                    with patch("sys.stdout", new_callable=StringIO):
+                        plugin_manager.cmd_upload(self._args(str(snap), gist_id="g1", dir_=tmp, keep_history=True))
+        mock_list.assert_not_called()
+        mock.assert_called_once_with(["gist", "edit", "g1", "--add", str(snap)])
+
+    def test_remove_failure_exits_with_real_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = self._write_snapshot(tmp, "new.json")
+            with patch("plugin_manager.list_gist_files", return_value=["mosjin__m__win32__old__x.json"]):
+                with patch("plugin_manager.run_gh", side_effect=[
+                    (0, "", ""),                     # add succeeds
+                    (1, "", "remove failed"),         # remove fails
+                ]):
+                    with self.assertRaises(SystemExit) as ctx:
+                        plugin_manager.cmd_upload(self._args(str(snap), gist_id="g1", dir_=tmp))
+        self.assertIn("remove failed", str(ctx.exception))
+
+
+class TestListGistFiles(unittest.TestCase):
+    def test_parses_one_filename_per_line(self):
+        with patch("plugin_manager.run_gh", return_value=(0, "a.json\nb.json\n", "")) as mock:
+            result = plugin_manager.list_gist_files("g1")
+        mock.assert_called_once_with(["gist", "view", "g1", "--files"])
+        self.assertEqual(result, ["a.json", "b.json"])
+
+    def test_blank_lines_dropped(self):
+        with patch("plugin_manager.run_gh", return_value=(0, "a.json\n\n\nb.json\n", "")):
+            result = plugin_manager.list_gist_files("g1")
+        self.assertEqual(result, ["a.json", "b.json"])
+
+    def test_cli_failure_exits(self):
+        with patch("plugin_manager.run_gh", return_value=(1, "", "boom")):
+            with self.assertRaises(SystemExit):
+                plugin_manager.list_gist_files("g1")
+
+
+class TestFindStaleGistSnapshots(unittest.TestCase):
+    def test_matches_same_machine_prefix_only(self):
+        snapshot = {"identity": "mosjin", "machine": "m", "platform": "win32"}
+        files = [
+            "mosjin__m__win32__2026-09-01__aaaa.json",
+            "mosjin__other__win32__2026-09-01__bbbb.json",
+            "someone-else__m__win32__2026-09-01__cccc.json",
+        ]
+        result = plugin_manager.find_stale_gist_snapshots(files, snapshot, "mosjin__m__win32__2026-09-17__new.json")
+        self.assertEqual(result, ["mosjin__m__win32__2026-09-01__aaaa.json"])
+
+    def test_excludes_the_new_filename_itself(self):
+        snapshot = {"identity": "mosjin", "machine": "m", "platform": "win32"}
+        new_name = "mosjin__m__win32__2026-09-17__new.json"
+        result = plugin_manager.find_stale_gist_snapshots([new_name], snapshot, new_name)
+        self.assertEqual(result, [])
+
+    def test_no_files_returns_empty(self):
+        snapshot = {"identity": "mosjin", "machine": "m", "platform": "win32"}
+        self.assertEqual(plugin_manager.find_stale_gist_snapshots([], snapshot, "x.json"), [])
 
 
 class TestCmdFetch(unittest.TestCase):
