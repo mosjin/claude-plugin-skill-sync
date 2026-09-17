@@ -69,19 +69,33 @@ def parse_gist_list(output: str) -> list:
     return records
 
 
-def list_snapshot_gists() -> list:
+def list_snapshot_gists(visibility: Optional[str] = None) -> list:
     """This tool's own gists — anything tagged SNAPSHOT_GIST_DESCRIPTION on
     the authenticated GitHub account. Backs both `gist-list` and
     resolve_gist_id's auto-discovery.
+
+    `gh gist list` has no server-side description filter (its own --help
+    lists only -L/--limit, --public, --secret — verified live; a prior
+    `--filter <description>` flag here was never real, so every call
+    failed with "unknown flag: --filter" and this couldn't be reached at
+    all). Filtering by SNAPSHOT_GIST_DESCRIPTION happens client-side below
+    instead; `visibility` ("public"/"secret"/None) maps straight onto the
+    one axis `gh gist list` actually supports.
     """
-    code, out, err = run_gh(["gist", "list", "--filter", SNAPSHOT_GIST_DESCRIPTION, "-L", "100"])
+    cli_args = ["gist", "list", "-L", "100"]
+    if visibility == "public":
+        cli_args.append("--public")
+    elif visibility == "secret":
+        cli_args.append("--secret")
+    code, out, err = run_gh(cli_args)
     if code != 0:
         sys.exit(f"Error listing gists: {_clean_gh_error(out, err, code)}")
-    return parse_gist_list(out)
+    return [g for g in parse_gist_list(out) if g["description"] == SNAPSHOT_GIST_DESCRIPTION]
 
 
-def cmd_gist_list(_args) -> None:
-    gists = list_snapshot_gists()
+def cmd_gist_list(args) -> None:
+    visibility = "secret" if getattr(args, "secret", False) else ("public" if getattr(args, "public", False) else None)
+    gists = list_snapshot_gists(visibility)
     if not gists:
         print(f"No gists tagged '{SNAPSHOT_GIST_DESCRIPTION}' found on this GitHub account.")
         print("Run `upload` on a machine that has a snapshot to create one.")

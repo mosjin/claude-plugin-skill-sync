@@ -1454,12 +1454,44 @@ class TestParseGistList(unittest.TestCase):
 
 
 class TestListSnapshotGists(unittest.TestCase):
-    def test_filters_by_description_via_gh_flag(self):
+    """`gh gist list` has no server-side description filter (verified
+    against its own --help: only -L/--limit, --public, --secret exist) —
+    a prior `--filter <description>` flag here was never real and every
+    real call failed with "unknown flag: --filter". Filtering is now done
+    client-side on the parsed output.
+    """
+
+    def test_never_passes_the_nonexistent_filter_flag(self):
         with patch("plugin_sync.gist.run_gh", return_value=(0, SAMPLE_GIST_LIST_OUTPUT, "")) as mock:
             gist.list_snapshot_gists()
         args = mock.call_args[0][0]
-        self.assertIn("--filter", args)
-        self.assertEqual(args[args.index("--filter") + 1], gist.SNAPSHOT_GIST_DESCRIPTION)
+        self.assertNotIn("--filter", args)
+
+    def test_filters_by_description_client_side(self):
+        """SAMPLE_GIST_LIST_OUTPUT has two gists — one tagged with this
+        tool's description, one unrelated. Only the tagged one must
+        survive, regardless of what `gh` itself returned."""
+        with patch("plugin_sync.gist.run_gh", return_value=(0, SAMPLE_GIST_LIST_OUTPUT, "")):
+            result = gist.list_snapshot_gists()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], "1cd6200ecc8a99f2cf03d59954bda507")
+
+    def test_no_visibility_flag_by_default(self):
+        with patch("plugin_sync.gist.run_gh", return_value=(0, "", "")) as mock:
+            gist.list_snapshot_gists()
+        args = mock.call_args[0][0]
+        self.assertNotIn("--public", args)
+        self.assertNotIn("--secret", args)
+
+    def test_public_visibility_passes_real_gh_flag(self):
+        with patch("plugin_sync.gist.run_gh", return_value=(0, "", "")) as mock:
+            gist.list_snapshot_gists(visibility="public")
+        self.assertIn("--public", mock.call_args[0][0])
+
+    def test_secret_visibility_passes_real_gh_flag(self):
+        with patch("plugin_sync.gist.run_gh", return_value=(0, "", "")) as mock:
+            gist.list_snapshot_gists(visibility="secret")
+        self.assertIn("--secret", mock.call_args[0][0])
 
     def test_cli_failure_exits(self):
         with patch("plugin_sync.gist.run_gh", return_value=(1, "", "auth error")):
@@ -1469,6 +1501,14 @@ class TestListSnapshotGists(unittest.TestCase):
 
 
 class TestCmdGistList(unittest.TestCase):
+    def _make_args(self, public=False, secret=False):
+        class Args:
+            pass
+        a = Args()
+        a.public = public
+        a.secret = secret
+        return a
+
     def test_no_gists_found_prints_hint(self):
         with patch("plugin_sync.gist.list_snapshot_gists", return_value=[]):
             with patch("sys.stdout", new_callable=StringIO) as mock_out:
@@ -1485,6 +1525,24 @@ class TestCmdGistList(unittest.TestCase):
         self.assertIn("abc123", output)
         self.assertIn("1 gist found", output)
         self.assertIn("fetch --gist-id", output)
+
+    def test_public_flag_forwarded_as_visibility(self):
+        with patch("plugin_sync.gist.list_snapshot_gists", return_value=[]) as mock:
+            with patch("sys.stdout", new_callable=StringIO):
+                gist.cmd_gist_list(self._make_args(public=True))
+        mock.assert_called_once_with("public")
+
+    def test_secret_flag_forwarded_as_visibility(self):
+        with patch("plugin_sync.gist.list_snapshot_gists", return_value=[]) as mock:
+            with patch("sys.stdout", new_callable=StringIO):
+                gist.cmd_gist_list(self._make_args(secret=True))
+        mock.assert_called_once_with("secret")
+
+    def test_no_flags_forwards_none(self):
+        with patch("plugin_sync.gist.list_snapshot_gists", return_value=[]) as mock:
+            with patch("sys.stdout", new_callable=StringIO):
+                gist.cmd_gist_list(self._make_args())
+        mock.assert_called_once_with(None)
 
 
 class TestCmdUpload(unittest.TestCase):

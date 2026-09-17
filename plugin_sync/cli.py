@@ -69,10 +69,13 @@ def main() -> None:
         help=f"Local snapshot dir to copy into (default: ${snapshots.ENV_SNAPSHOT_DIR} or ./{snapshots.DEFAULT_SNAPSHOT_DIR})",
     )
 
-    sub.add_parser(
+    gist_list = sub.add_parser(
         "gist-list",
         help=f"List this tool's own gists (tagged '{gist.SNAPSHOT_GIST_DESCRIPTION}') — find a --gist-id without leaving the terminal",
     )
+    gist_visibility = gist_list.add_mutually_exclusive_group()
+    gist_visibility.add_argument("--public", action="store_true", help="Only show public gists")
+    gist_visibility.add_argument("--secret", action="store_true", help="Only show secret gists")
 
     apply_ = sub.add_parser("apply", help="Install plugins missing on this machine from a merged snapshot")
     apply_.add_argument("merged_file", help="Path to a `merge --out` JSON file")
