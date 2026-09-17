@@ -68,10 +68,10 @@ def other_platform_only_ids(merged: dict, plugin_ids: list, current_platform: st
     """Which of `plugin_ids` have only ever been seen (across every merged
     machine) on a platform other than `current_platform`.
 
-    Heuristic, not a manifest fact — see the comment on merge_snapshots'
+    Heuristic, not a manifest fact — see the comment on diff_snapshots'
     `platforms` field for why no authoritative source exists to query
     instead. A plugin with an empty/missing `platforms` list (older
-    `merge --out` files predating this field) is never flagged: no signal
+    `diff --out` files predating this field) is never flagged: no signal
     beats a wrong one.
     """
     result = []

@@ -37,7 +37,7 @@ def load_snapshots(dir_path: Path) -> list:
 _REQUIRED_SNAPSHOT_FIELDS = {"identity", "machine", "platform", "captured_at", "plugins", "skills"}
 
 
-def merge_snapshots(snapshots: list) -> dict:
+def diff_snapshots(snapshots: list) -> dict:
     """Pure function: list of snapshot dicts in, one drift-view dict out.
     Raises ValueError on bad input — no process-level side effects, so
     callers (CLI or test) decide how to react.
@@ -156,7 +156,7 @@ def merge_snapshots(snapshots: list) -> dict:
 def _plugin_is_identical(entry: dict, machine_keys: list) -> bool:
     """No drift AND present on every machine — nothing here for a diff to
     say. Only meaningful with 2+ machines; see the single-machine guard in
-    _print_merge_table for why this is never even called there."""
+    _print_diff_table for why this is never even called there."""
     return not entry["drift"] and len(entry["present_on"]) == len(machine_keys)
 
 
@@ -164,7 +164,7 @@ def _skill_is_identical(entry: dict, machine_keys: list) -> bool:
     return len(entry["present_on"]) == len(machine_keys)
 
 
-def _print_merge_table(merged: dict, full: bool = False) -> None:
+def _print_diff_table(merged: dict, full: bool = False) -> None:
     """Compact by default (#13): a real machine can carry hundreds of
     skills and dozens of plugins, nearly all identical across machines —
     printing every one of them buries the handful that actually differ.
@@ -214,14 +214,14 @@ def _print_merge_table(merged: dict, full: bool = False) -> None:
             print(f"  - {note}")
 
 
-def cmd_merge(args) -> None:
+def cmd_diff(args) -> None:
     dir_path = snapshots_mod.resolve_snapshot_dir(args)
     snapshots = load_snapshots(dir_path)
     try:
-        merged = merge_snapshots(snapshots)
+        merged = diff_snapshots(snapshots)
     except ValueError as exc:
         sys.exit(f"Error: {exc}")
-    _print_merge_table(merged, full=getattr(args, "full", False))
+    _print_diff_table(merged, full=getattr(args, "full", False))
 
     if args.out:
         out_path = Path(args.out)

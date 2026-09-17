@@ -12,7 +12,7 @@ from unittest.mock import patch, call
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 import plugin_manager
 from plugin_sync import claude_cli, snapshots, marketplaces, gist
-from plugin_sync import merge as merge_mod
+from plugin_sync import diff as diff_mod
 from plugin_sync import apply as apply_mod
 
 
@@ -1045,18 +1045,18 @@ class TestLoadSnapshots(unittest.TestCase):
 
     def test_missing_dir_exits(self):
         with self.assertRaises(SystemExit):
-            merge_mod.load_snapshots(Path("no/such/dir"))
+            diff_mod.load_snapshots(Path("no/such/dir"))
 
     def test_empty_dir_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit):
-                merge_mod.load_snapshots(Path(tmp))
+                diff_mod.load_snapshots(Path(tmp))
 
     def test_schema_version_mismatch_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._write(Path(tmp), "a.json", {"schema_version": 999})
             with self.assertRaises(SystemExit):
-                merge_mod.load_snapshots(Path(tmp))
+                diff_mod.load_snapshots(Path(tmp))
 
     def test_loads_multiple_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1064,14 +1064,14 @@ class TestLoadSnapshots(unittest.TestCase):
                     "platform": "win32", "captured_at": "2026-09-16", "plugins": [], "skills": []}
             self._write(Path(tmp), "a.json", base)
             self._write(Path(tmp), "b.json", dict(base, machine="b"))
-            result = merge_mod.load_snapshots(Path(tmp))
+            result = diff_mod.load_snapshots(Path(tmp))
         self.assertEqual(len(result), 2)
 
     def test_non_dict_json_exits_cleanly(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._write(Path(tmp), "a.json", ["not", "a", "dict"])
             with self.assertRaises(SystemExit):
-                merge_mod.load_snapshots(Path(tmp))
+                diff_mod.load_snapshots(Path(tmp))
 
     def test_skips_merged_output_sitting_in_same_dir(self):
         """A `merge --out` result living in the snapshot dir must not be
@@ -1082,7 +1082,7 @@ class TestLoadSnapshots(unittest.TestCase):
                     "platform": "win32", "captured_at": "2026-09-16", "plugins": [], "skills": []}
             self._write(Path(tmp), "a.json", base)
             self._write(Path(tmp), "merged.json", {"schema_version": 1, "kind": "merged", "identity": "mosjin"})
-            result = merge_mod.load_snapshots(Path(tmp))
+            result = diff_mod.load_snapshots(Path(tmp))
         self.assertEqual(len(result), 1)
 
 
@@ -1109,50 +1109,50 @@ SNAP_MACHINE_B = _snap(
 )
 
 
-class TestMergeSnapshots(unittest.TestCase):
+class TestDiffSnapshots(unittest.TestCase):
     def test_empty_input_raises(self):
         with self.assertRaises(ValueError):
-            merge_mod.merge_snapshots([])
+            diff_mod.diff_snapshots([])
 
     def test_mismatched_identity_raises(self):
         other = dict(SNAP_MACHINE_B, identity="someone-else")
         with self.assertRaises(ValueError):
-            merge_mod.merge_snapshots([SNAP_MACHINE_A, other])
+            diff_mod.diff_snapshots([SNAP_MACHINE_A, other])
 
     def test_missing_required_field_raises_valueerror_not_keyerror(self):
         broken = {k: v for k, v in SNAP_MACHINE_A.items() if k != "captured_at"}
         with self.assertRaises(ValueError):
-            merge_mod.merge_snapshots([broken])
+            diff_mod.diff_snapshots([broken])
 
     def test_non_dict_snapshot_raises_valueerror(self):
         with self.assertRaises(ValueError):
-            merge_mod.merge_snapshots(["not a dict"])
+            diff_mod.diff_snapshots(["not a dict"])
 
     def test_no_process_exit_on_bad_input(self):
-        """merge_snapshots must stay pure — ValueError, never SystemExit."""
+        """diff_snapshots must stay pure — ValueError, never SystemExit."""
         with self.assertRaises(ValueError):
-            merge_mod.merge_snapshots([])
+            diff_mod.diff_snapshots([])
 
     def test_kind_marker_set(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(merged["kind"], "merged")
 
     def test_version_drift_detected(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertIn("version", merged["plugins"]["caveman@caveman"]["drift"])
 
     def test_no_drift_when_all_machines_agree(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(merged["plugins"]["ecc@ecc"]["drift"], [])
 
     def test_scope_and_enabled_drift_detected(self):
         a = _snap("m-a", "win32", "2026-09-16", [_plugin("x@x", "1.0", scope="user", enabled=True)], [])
         b = _snap("m-b", "linux", "2026-09-16", [_plugin("x@x", "1.0", scope="local", enabled=False)], [])
-        merged = merge_mod.merge_snapshots([a, b])
+        merged = diff_mod.diff_snapshots([a, b])
         self.assertEqual(set(merged["plugins"]["x@x"]["drift"]), {"scope", "enabled"})
 
     def test_plugin_present_only_on_one_machine(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         ecc_machines = set(merged["plugins"]["ecc@ecc"]["present_on"])
         self.assertEqual(ecc_machines, {"linux-box@linux"})
 
@@ -1160,28 +1160,28 @@ class TestMergeSnapshots(unittest.TestCase):
         """caveman@caveman is installed on both the win32 and linux
         machines — apply's other-platform heuristic needs this union, not
         just whichever machine happened to be listed last."""
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(merged["plugins"]["caveman@caveman"]["platforms"], ["linux", "win32"])
 
     def test_platforms_field_single_platform_when_only_seen_there(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(merged["plugins"]["ecc@ecc"]["platforms"], ["linux"])
 
     def test_skills_merged_across_machines(self):
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertIn("user/api-design", merged["skills"])
 
     def test_snapshot_without_marketplaces_field_still_merges(self):
         """SNAP_MACHINE_A/B predate this field — old snapshots (or ones
         just fetched from a gist saved before this feature) must not
         crash merge."""
-        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        merged = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(merged["marketplaces"], {})
 
     def test_marketplaces_merged_across_machines(self):
         a = dict(SNAP_MACHINE_A, marketplaces=[{"name": "caveman", "source": "github", "repo": "a/b"}])
         b = dict(SNAP_MACHINE_B, marketplaces=[{"name": "caveman", "source": "github", "repo": "a/b"}])
-        merged = merge_mod.merge_snapshots([a, b])
+        merged = diff_mod.diff_snapshots([a, b])
         entry = merged["marketplaces"]["caveman"]
         self.assertEqual(set(entry["present_on"]), {"win-desktop@win32", "linux-box@linux"})
         self.assertEqual(entry["drift"], [])
@@ -1193,17 +1193,17 @@ class TestMergeSnapshots(unittest.TestCase):
         not silently averaged away."""
         a = dict(SNAP_MACHINE_A, marketplaces=[{"name": "caveman", "source": "github", "repo": "old/repo"}])
         b = dict(SNAP_MACHINE_B, marketplaces=[{"name": "caveman", "source": "github", "repo": "new/repo"}])
-        merged = merge_mod.merge_snapshots([a, b])
+        merged = diff_mod.diff_snapshots([a, b])
         self.assertEqual(merged["marketplaces"]["caveman"]["drift"], ["source"])
 
     def test_idempotent_same_input_same_output(self):
-        first = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
-        second = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        first = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        second = diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(first, second)
 
     def test_inputs_not_mutated(self):
         before = json.dumps(SNAP_MACHINE_A)
-        merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        diff_mod.diff_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertEqual(json.dumps(SNAP_MACHINE_A), before)
 
     def test_two_snapshots_same_machine_latest_date_wins_wholesale(self):
@@ -1221,8 +1221,8 @@ class TestMergeSnapshots(unittest.TestCase):
             [_plugin("caveman@caveman", "NEW")],
             [],
         )
-        merged_forward = merge_mod.merge_snapshots([old, new])
-        merged_reversed = merge_mod.merge_snapshots([new, old])
+        merged_forward = diff_mod.diff_snapshots([old, new])
+        merged_reversed = diff_mod.diff_snapshots([new, old])
         for merged in (merged_forward, merged_reversed):
             self.assertEqual(
                 merged["plugins"]["caveman@caveman"]["present_on"]["win-desktop@win32"]["version"],
@@ -1234,14 +1234,14 @@ class TestMergeSnapshots(unittest.TestCase):
     def test_same_day_tie_is_deterministic_and_noted(self):
         a = _snap("win-desktop", "win32", "2026-09-16", [_plugin("x@x", "first")], [])
         b = _snap("win-desktop", "win32", "2026-09-16", [_plugin("x@x", "second")], [])
-        merged = merge_mod.merge_snapshots([a, b])
+        merged = diff_mod.diff_snapshots([a, b])
         self.assertEqual(
             merged["plugins"]["x@x"]["present_on"]["win-desktop@win32"]["version"], "second"
         )
         self.assertTrue(any("multiple snapshots dated" in note for note in merged["notes"]))
 
 
-class TestCmdMerge(unittest.TestCase):
+class TestCmdDiff(unittest.TestCase):
     def _args(self, dir_, out=None, full=False):
         class Args:
             pass
@@ -1256,7 +1256,7 @@ class TestCmdMerge(unittest.TestCase):
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
             (Path(tmp) / "b.json").write_text(json.dumps(SNAP_MACHINE_B), encoding="utf-8")
             with patch("sys.stdout", new_callable=StringIO) as mock_out:
-                merge_mod.cmd_merge(self._args(tmp))
+                diff_mod.cmd_diff(self._args(tmp))
             output = mock_out.getvalue()
         self.assertIn("version drift", output)
         self.assertIn("missing on", output)
@@ -1266,7 +1266,7 @@ class TestCmdMerge(unittest.TestCase):
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
             out_path = Path(tmp) / "merged.json"
             with patch("sys.stdout", new_callable=StringIO):
-                merge_mod.cmd_merge(self._args(tmp, out=str(out_path)))
+                diff_mod.cmd_diff(self._args(tmp, out=str(out_path)))
             self.assertTrue(out_path.exists())
             data = json.loads(out_path.read_text(encoding="utf-8"))
             self.assertEqual(data["identity"], "mosjin")
@@ -1278,14 +1278,14 @@ class TestCmdMerge(unittest.TestCase):
             (Path(tmp) / "b.json").write_text(json.dumps(other), encoding="utf-8")
             with patch("sys.stdout", new_callable=StringIO):
                 with self.assertRaises(SystemExit):
-                    merge_mod.cmd_merge(self._args(tmp))
+                    diff_mod.cmd_diff(self._args(tmp))
 
     def test_out_creates_missing_parent_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
             out_path = Path(tmp) / "reports" / "merged.json"
             with patch("sys.stdout", new_callable=StringIO):
-                merge_mod.cmd_merge(self._args(tmp, out=str(out_path)))
+                diff_mod.cmd_diff(self._args(tmp, out=str(out_path)))
             self.assertTrue(out_path.exists())
 
     def test_merge_out_into_snapshot_dir_then_remerge_does_not_crash(self):
@@ -1295,8 +1295,8 @@ class TestCmdMerge(unittest.TestCase):
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
             out_path = Path(tmp) / "merged.json"
             with patch("sys.stdout", new_callable=StringIO):
-                merge_mod.cmd_merge(self._args(tmp, out=str(out_path)))
-                merge_mod.cmd_merge(self._args(tmp))  # re-merge same dir
+                diff_mod.cmd_diff(self._args(tmp, out=str(out_path)))
+                diff_mod.cmd_diff(self._args(tmp))  # re-merge same dir
 
 
 COMPACT_TEST_MERGED = {
@@ -1324,7 +1324,7 @@ COMPACT_TEST_MERGED = {
 }
 
 
-class TestPrintMergeTableCompactOutput(unittest.TestCase):
+class TestPrintDiffTableCompactOutput(unittest.TestCase):
     """#13: a real machine's diff can carry hundreds of skills, nearly all
     identical across machines — printing every one buries the handful
     that actually differ. Default output hides fully-identical rows;
@@ -1333,7 +1333,7 @@ class TestPrintMergeTableCompactOutput(unittest.TestCase):
 
     def test_compact_hides_identical_plugin_by_default(self):
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
-            merge_mod._print_merge_table(COMPACT_TEST_MERGED)
+            diff_mod._print_diff_table(COMPACT_TEST_MERGED)
             output = mock_out.getvalue()
         self.assertNotIn("identical@mp", output)
         self.assertIn("drifted@mp", output)
@@ -1342,14 +1342,14 @@ class TestPrintMergeTableCompactOutput(unittest.TestCase):
 
     def test_compact_hides_identical_skill_by_default(self):
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
-            merge_mod._print_merge_table(COMPACT_TEST_MERGED)
+            diff_mod._print_diff_table(COMPACT_TEST_MERGED)
             output = mock_out.getvalue()
         self.assertNotIn("identical-skill", output)
         self.assertIn("partial-skill", output)
 
     def test_full_flag_shows_every_entry(self):
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
-            merge_mod._print_merge_table(COMPACT_TEST_MERGED, full=True)
+            diff_mod._print_diff_table(COMPACT_TEST_MERGED, full=True)
             output = mock_out.getvalue()
         self.assertIn("identical@mp", output)
         self.assertIn("identical-skill", output)
@@ -1370,25 +1370,25 @@ class TestPrintMergeTableCompactOutput(unittest.TestCase):
             "notes": [],
         }
         with patch("sys.stdout", new_callable=StringIO) as mock_out:
-            merge_mod._print_merge_table(single)
+            diff_mod._print_diff_table(single)
             output = mock_out.getvalue()
         self.assertIn("solo@mp", output)
         self.assertIn("solo-skill", output)
         self.assertNotIn("more identical across all machines", output)
 
-    def test_cmd_merge_forwards_full_flag_to_print(self):
+    def test_cmd_diff_forwards_full_flag_to_print(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
-            with patch("plugin_sync.merge._print_merge_table") as mock_print:
-                merge_mod.cmd_merge(TestCmdMerge()._args(tmp, full=True))
+            with patch("plugin_sync.diff._print_diff_table") as mock_print:
+                diff_mod.cmd_diff(TestCmdDiff()._args(tmp, full=True))
         mock_print.assert_called_once()
         self.assertEqual(mock_print.call_args.kwargs["full"], True)
 
-    def test_cmd_merge_defaults_full_to_false(self):
+    def test_cmd_diff_defaults_full_to_false(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
-            with patch("plugin_sync.merge._print_merge_table") as mock_print:
-                merge_mod.cmd_merge(TestCmdMerge()._args(tmp))
+            with patch("plugin_sync.diff._print_diff_table") as mock_print:
+                diff_mod.cmd_diff(TestCmdDiff()._args(tmp))
         mock_print.assert_called_once()
         self.assertEqual(mock_print.call_args.kwargs["full"], False)
 

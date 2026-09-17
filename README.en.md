@@ -55,7 +55,7 @@ surfaced (not managed) via [`doctor`](#commands).
 | **Works on a fresh machine** | Snapshots record each plugin's marketplace source (GitHub repo / git url) too — `apply -y` runs `marketplace add` for you |
 | **Never guesses installs** | Plugins with no source on record (e.g. a marketplace added from a local path) are listed and skipped, **not force-installed** |
 | **243 tests** | All mocked — real plugins are never touched during testing |
-| **Modular internals** | Implementation lives in the `plugin_sync/` package, split by domain (claude_cli/snapshots/marketplaces/merge/gist/apply) — `plugin_manager.py` is just the entry-point shim |
+| **Modular internals** | Implementation lives in the `plugin_sync/` package, split by domain (claude_cli/snapshots/marketplaces/diff/gist/apply) — `plugin_manager.py` is just the entry-point shim |
 
 ## Quick Start (beginner-friendly)
 
@@ -78,9 +78,9 @@ Only using one machine? That's it. Want to sync plugins across machines? See the
 
 > **The command names borrow git's vocabulary, but the semantics aren't
 > identical**: `fetch` really does behave like `git fetch` — it pulls
-> remote data down. But `diff` (its real name; `merge` is kept only as an
-> alias) is **not** `git merge` — it only compares, never touches a file.
-> Read-only, full stop. The step that actually "applies the diff" is
+> remote data down. But `diff` is **not** `git merge` — it only compares,
+> never touches a file. Read-only, full stop. The step that actually
+> "applies the diff" is
 > `apply` — not `diff`, and not `update` either (`update` only upgrades
 > plugins already installed on this machine to their own latest version;
 > it has nothing to do with this sync system).
@@ -204,7 +204,7 @@ the new snapshot to the same gist instead of creating a second one — then
 | [`doctor`](#doctor) | List standalone MCP servers this tool can't touch |
 | [`uninstall` / `remove`](#uninstall--remove) | Remove plugins |
 | [`save`](#save--diff--upload--fetch--apply) | Save a desensitized snapshot of this machine |
-| [`diff` (alias `merge`)](#save--diff--upload--fetch--apply) | Compare snapshots from multiple machines into a drift view (read-only) |
+| [`diff`](#save--diff--upload--fetch--apply) | Compare snapshots from multiple machines into a drift view (read-only) |
 | [`upload` / `fetch`](#save--diff--upload--fetch--apply) | Sync snapshots via GitHub Gist |
 | [`gist-list`](#gist-list) | List gists this tool created — find an id without opening a browser |
 | [`apply`](#save--diff--upload--fetch--apply) | Install whatever's missing on this machine per a snapshot |
@@ -335,8 +335,7 @@ python plugin_manager.py save --identity mosjin --machine work-laptop
 python plugin_manager.py save --identity mosjin --machine work-laptop --dir /path/to/synced/dir
 
 # Compare every snapshot in a directory into one per-machine drift view
-# (read-only — installs nothing). `merge` is kept as an alias of the same
-# command for anyone used to the old name.
+# (read-only — installs nothing)
 python plugin_manager.py diff --dir /path/to/synced/dir
 
 # By default only drifted/missing entries print — identical ones collapse

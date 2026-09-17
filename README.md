@@ -51,7 +51,7 @@
 | **全新机器也能装** | 快照连插件的 marketplace 源（GitHub repo / git url）一起记，`apply -y` 自动帮你 `marketplace add` |
 | **只装认识源的** | 没记录到可用源（比如本地路径添加的 marketplace）的插件，只列出跳过，**绝不瞎猜安装** |
 | **243 项测试** | 全 mock，测试不碰真实插件 |
-| **模块化** | 实现拆到 `plugin_sync/` 包，按领域分模块（claude_cli/snapshots/marketplaces/merge/gist/apply），`plugin_manager.py` 只是入口 shim |
+| **模块化** | 实现拆到 `plugin_sync/` 包，按领域分模块（claude_cli/snapshots/marketplaces/diff/gist/apply），`plugin_manager.py` 只是入口 shim |
 
 ## 快速上手（新手向）
 
@@ -73,10 +73,10 @@ python plugin_manager.py update --all
 ## 跨机同步完整流程
 
 > **这里的命令名字借用了 git 的词汇，但语义不完全一样**：`fetch` 确实跟
-> `git fetch` 一样，把远端数据拉到本地；但 `diff`（本名如此，`merge` 只是保留
-> 的别名）**不是** `git merge`——它只对比、不改任何文件，纯只读报告。真正"把
-> 差异应用到本地"这一步是 `apply`，是它,不是 `diff`,也不是 `update`（`update`
-> 只管本机已装插件升到各自最新版，跟这套同步系统完全无关）。
+> `git fetch` 一样，把远端数据拉到本地；但 `diff` **不是** `git merge`——它
+> 只对比、不改任何文件，纯只读报告。真正"把差异应用到本地"这一步是 `apply`，
+> 是它,不是 `diff`,也不是 `update`（`update` 只管本机已装插件升到各自最新版，
+> 跟这套同步系统完全无关）。
 
 ### 典型用法速览
 
@@ -85,51 +85,54 @@ python plugin_manager.py update --all
 | 机器 | 要跑的命令 |
 |---|---|
 | **源机器**（已经装好插件，想让别的机器也一样） | `save` → `upload` |
-| **目标机器**（想同步过来） | `fetch` → `diff`（可选，只是看一眼差异）→ `apply` |
+| **目标机器**（想同步过来） | `fetch` → `diff --out merged.json` → `apply` |
+
+> **`diff` 这条命令要跑一次，但不用真的去看它打印了什么。** `apply` 语法上
+> 必须吃一个 `diff --out` 生成的 json 文件——这一步跳不过去，`apply` 的第一
+> 个参数就是这份文件。但 `apply` 自己判断"这台机器缺什么"靠的是
+> `claude plugin list` **实时查这台机器的真实状态**，不是读 `diff` 打印在
+> 屏幕上的那份对比表格，也不管目标机器有没有 `save` 过。所以可以直接
+> `diff --dir snapshots --out merged.json`，不用停下来看它打印了什么内容，
+> 紧接着 `apply merged.json` 就行——省掉的是"看懂那份报告再决定"这一步人工
+> 判断，不是"生成文件"这一步命令。
 
 往下看完整命令 + 每一步真实跑出来长什么样。
 
 ### 完整步骤（真实跑出来的输出）
 
 下面把两台机器分别叫 **src**（已经装好插件的那台）和 **dest**（想同步过来的
-那台）。每条命令后面紧跟的代码块都是这个工具真实跑出来的输出（不是手写的
-示例），你跑出来的插件名字/数量会不一样，但格式一样。
+那台）。下面每个代码块里，`$` 开头的一行是你要敲的命令，**紧跟在下面、没有
+`$` 的部分是这个工具真实跑出来的输出**（不是手写的示例）——两者在同一个块里，
+不是两条不同的命令。你跑出来的插件名字/数量会不一样，但格式一样。
 
+**在 src 上：保存本机快照**
 ```bash
-# 在 src 上：保存本机快照
-python plugin_manager.py save --identity mosjin --machine src
-```
-```
+$ python plugin_manager.py save --identity mosjin --machine src
 Saved snapshot: snapshots/mosjin__src__linux__2026-09-17__demo0001.json
   30 plugin(s), 549 skill(s)
 ```
 
+**在 src 上：传到 GitHub Gist**（第一次自动建一个 secret gist，id 缓存进
+`snapshots/.gist_id`；同一台机器以后再传会顶替掉这台机器的旧快照，想保留
+每次历史就加 `--keep-history`）
 ```bash
-# 在 src 上：传到 GitHub Gist（第一次自动建一个 secret gist，
-# id 缓存进 snapshots/.gist_id；同一台机器以后再传会顶替掉这台机器的旧快照，
-# 想保留每次历史就加 --keep-history）
-python plugin_manager.py upload snapshots/mosjin__src__linux__2026-09-17__demo0001.json
-```
-```
+$ python plugin_manager.py upload snapshots/mosjin__src__linux__2026-09-17__demo0001.json
 Created new gist (https://gist.github.com/<你的账号>/<新 gist 的 id>)
   secret = unlisted, not private — anyone with the link can read it.
 
 Cached in snapshots/.gist_id — future upload/fetch in this dir reuse it automatically.
 ```
 
+**在 dest 上：拉取 src 传上去的快照**（账号下只有这一个 gist 时自动找到，
+不用敲 id）
 ```bash
-# 在 dest 上：拉取 src 传上去的快照 —— 账号下只有这一个 gist 时自动找到，不用敲 id
-python plugin_manager.py fetch --dir snapshots
-```
-```
+$ python plugin_manager.py fetch --dir snapshots
 Fetched gist <gist_id>: 1 snapshot(s) found, 1 new one(s) copied into snapshots
 ```
 
+**在 dest 上：（可选）对比两份快照，看看会发生什么**（只读，不装任何东西）
 ```bash
-# 在 dest 上：对比两份快照（只读，不装任何东西）
-python plugin_manager.py diff --dir snapshots --out merged.json
-```
-```
+$ python plugin_manager.py diff --dir snapshots --out merged.json
 Identity: mosjin
 Machines: dest@linux, src@linux
 
@@ -145,11 +148,9 @@ Merged view written to: merged.json
 `[missing on: dest@linux]` 就是"src 有、dest 没有"的插件——这才是 `apply`
 真正会去装的东西；折叠掉的那 1 条是两边完全一样的，`--full` 能看全量。
 
+**在 dest 上：先预览，不加 `-y` 什么都不会装**
 ```bash
-# 在 dest 上：先预览，不加 -y 什么都不会装
-python plugin_manager.py apply merged.json --all --scope user
-```
-```
+$ python plugin_manager.py apply merged.json --all --scope user
 Installable (marketplace already available here):
   agentmemory@agentmemory  (on: src@linux)
     Persistent memory for AI coding agents -- captures tool usage, compresses via LLM, injects context into future sessions
@@ -157,9 +158,9 @@ Installable (marketplace already available here):
 Dry run — pass -y to actually install. Nothing was installed.
 ```
 
+**确认没问题，加 `-y` 真正安装**
 ```bash
-# 确认没问题，加 -y 真正安装
-python plugin_manager.py apply merged.json --all -y --scope user
+$ python plugin_manager.py apply merged.json --all -y --scope user
 ```
 
 即使 dest 是台全新电脑、一个 marketplace 都没加过也没关系：快照里连插件的
@@ -187,7 +188,7 @@ marketplace 源（GitHub repo 或 git url）都记了，`apply -y` 会自动先
 | [`doctor`](#doctor) | 列出本工具管不到的独立 MCP server |
 | [`uninstall` / `remove`](#uninstall--remove) | 卸载插件 |
 | [`save`](#save--diff--upload--fetch--apply) | 保存本机插件/技能的脱敏快照 |
-| [`diff`（别名 `merge`）](#save--diff--upload--fetch--apply) | 对比多台机器的快照，生成差异视图（只读） |
+| [`diff`](#save--diff--upload--fetch--apply) | 对比多台机器的快照，生成差异视图（只读） |
 | [`upload` / `fetch`](#save--diff--upload--fetch--apply) | 用 GitHub Gist 同步快照 |
 | [`gist-list`](#gist-list) | 列出本工具建过的 gist，找 id 不用开浏览器 |
 | [`apply`](#save--diff--upload--fetch--apply) | 把本机缺的插件按快照补装上 |
@@ -310,8 +311,7 @@ python plugin_manager.py save --identity mosjin --machine work-laptop
 # 或者直接用下面的 upload/fetch。
 python plugin_manager.py save --identity mosjin --machine work-laptop --dir /path/to/synced/dir
 
-# 对比某目录下所有快照，生成一份「每台机器」差异视图（只读，不装任何东西）。
-# `merge` 是同一个命令的别名，保留给用惯旧名字的人。
+# 对比某目录下所有快照，生成一份「每台机器」差异视图（只读，不装任何东西）
 python plugin_manager.py diff --dir /path/to/synced/dir
 
 # 默认只显示有差异（drift / 缺失）的条目，完全一致的折叠成一行统计——

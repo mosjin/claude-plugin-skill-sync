@@ -2,7 +2,7 @@
 import argparse
 
 from . import claude_cli, snapshots, gist
-from . import merge as merge_mod
+from . import diff as diff_mod
 from . import apply as apply_mod
 
 
@@ -41,16 +41,15 @@ def main() -> None:
 
     # Named `diff` (not `merge`) on purpose: unlike `git merge`, this never
     # touches any file outside --out — it only compares snapshots and
-    # prints/writes a read-only drift report. `merge` is kept as an alias
-    # so muscle memory from before this rename still works; `apply` is the
-    # command that actually installs anything.
-    merge = sub.add_parser("diff", aliases=["merge"], help="Compare snapshots from a directory and report drift (read-only — use `apply` to actually install anything)")
-    merge.add_argument(
+    # prints/writes a read-only drift report. `apply` is the command that
+    # actually installs anything.
+    diff_parser = sub.add_parser("diff", help="Compare snapshots from a directory and report drift (read-only — use `apply` to actually install anything)")
+    diff_parser.add_argument(
         "--dir",
         help=f"Snapshot input dir (default: ${snapshots.ENV_SNAPSHOT_DIR} or ./{snapshots.DEFAULT_SNAPSHOT_DIR})",
     )
-    merge.add_argument("--out", help="Optional path to also write the diff view as JSON")
-    merge.add_argument(
+    diff_parser.add_argument("--out", help="Optional path to also write the diff view as JSON")
+    diff_parser.add_argument(
         "--full",
         action="store_true",
         help="Show every plugin/skill, including ones identical across all machines (default: only drift/missing)",
@@ -111,8 +110,8 @@ def main() -> None:
         claude_cli.cmd_doctor(args)
     elif args.command == "save":
         snapshots.cmd_save(args)
-    elif args.command in ("diff", "merge"):
-        merge_mod.cmd_merge(args)
+    elif args.command == "diff":
+        diff_mod.cmd_diff(args)
     elif args.command == "upload":
         gist.cmd_upload(args)
     elif args.command == "fetch":

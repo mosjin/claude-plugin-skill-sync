@@ -179,7 +179,7 @@ def _is_valid_snapshot_file(path: Path) -> bool:
     """Refuse anything that isn't a `save`-produced snapshot — guards both
     `upload` (don't push `merged.json` or an unrelated file under a gist
     filename that silently replaces a real snapshot) and `fetch` (don't
-    import a file that would make every later `merge` in this dir explode,
+    import a file that would make every later `diff` in this dir explode,
     permanently, since 'already exists locally' is the only skip check).
     """
     try:
