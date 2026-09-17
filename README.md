@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#环境要求)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-170%20passing-brightgreen)](#测试)
+[![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)](#测试)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#跨平台)
 
 [English](README.en.md)
@@ -48,7 +48,7 @@
 | **脱敏快照** | `identity`/`machine` 必须是标签，**不能填真实邮箱或主机名** |
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
 | **只装认识的** | 目标机器没加对应 marketplace 的插件，只列出跳过，**绝不瞎猜安装** |
-| **170 项测试** | 全 mock，测试不碰真实插件 |
+| **177 项测试** | 全 mock，测试不碰真实插件 |
 
 ## 快速上手（新手向）
 
@@ -261,7 +261,7 @@ python bootstrap_tools.py --check  # 只报状态，不装
 python -m pytest tests/ -v
 ```
 
-170 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
+177 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
 
 ## 跨平台
 

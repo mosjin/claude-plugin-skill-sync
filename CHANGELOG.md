@@ -4,6 +4,13 @@
 
 ### 📐 Refactor
 - Repo renamed `claude_plugin_updater` → `claude-plugin-skill-sync` to reflect actual scope (plugin management + cross-machine plugin/skill sync, not just "updating"). Old GitHub URL still redirects. Local project folder intentionally left unrenamed — see LESSONS.md.
+- README split into `README.md` (Chinese, default) and `README.en.md` (English), cross-linked — no more single file mixing both languages.
+
+### 🐛 Fix
+- `update` / `uninstall`: plugins with `scope: "synced"` (pulled from a claude.ai account, no local marketplace backing) are now skipped with a clear message instead of failing with a generic "Invalid scope" error — see VERIFIED_FACTS.md.
+
+### Tests
+177 tests (up from 170), all subprocess calls mocked.
 
 ## [unreleased] 2026-09-16
 

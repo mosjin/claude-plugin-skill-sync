@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-170%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -52,7 +52,7 @@ surfaced (not managed) via [`doctor`](#commands).
 | **Desensitized snapshots** | `identity`/`machine` are required labels, **never a raw email or hostname** |
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
 | **Never guesses installs** | Plugins whose marketplace isn't on the target machine are listed and skipped, **not force-installed** |
-| **170 tests** | All mocked — real plugins are never touched during testing |
+| **177 tests** | All mocked — real plugins are never touched during testing |
 
 ## Quick Start (beginner-friendly)
 
@@ -270,7 +270,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-170 tests, all subprocess calls mocked — no real plugins are modified during testing.
+177 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 

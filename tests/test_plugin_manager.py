@@ -114,6 +114,32 @@ class TestUpdateOne(unittest.TestCase):
             plugin_manager.update_one(local_plugin)
         mock.assert_called_once_with(["plugin", "update", "caveman@caveman", "-s", "local"])
 
+    def test_synced_scope_skipped_without_calling_cli(self):
+        """`scope: "synced"` (claude.ai account plugin, no marketplace
+        backing) isn't a valid `-s` value — the CLI rejects it outright
+        with a generic "Invalid scope" error. update_one must recognize
+        it and never call the CLI at all."""
+        synced_plugin = dict(SAMPLE_PLUGINS[0], scope="synced")
+        with patch("plugin_manager.run_claude") as mock:
+            result = plugin_manager.update_one(synced_plugin)
+        mock.assert_not_called()
+        self.assertTrue(result["unmanageable"])
+        self.assertIsNone(result["code"])
+        self.assertIn("claude.ai", result["message"])
+
+
+class TestIsCliManageable(unittest.TestCase):
+    def test_known_scopes_are_manageable(self):
+        for scope in ("user", "project", "local", "managed"):
+            with self.subTest(scope=scope):
+                self.assertTrue(plugin_manager.is_cli_manageable({"scope": scope}))
+
+    def test_synced_scope_is_not_manageable(self):
+        self.assertFalse(plugin_manager.is_cli_manageable({"scope": "synced"}))
+
+    def test_missing_scope_is_not_manageable(self):
+        self.assertFalse(plugin_manager.is_cli_manageable({}))
+
 
 class TestResolveUpdateStatus(unittest.TestCase):
     """The version-diff replacement for the old regex-on-stdout guess."""
@@ -327,6 +353,27 @@ class TestCmdUpdate(unittest.TestCase):
         self.assertIn("subprocess exploded", output)
         self.assertIn("✗ ecc@ecc", output)
 
+    def test_synced_scope_plugin_reported_as_skipped_not_failed(self):
+        """A `scope: "synced"` plugin must show up as skipped in the
+        summary and must NOT trip the failed-exit-code path — it was never
+        actually attempted, so it's not a failure."""
+        synced = dict(SAMPLE_PLUGINS[0], id="engineering@synced", scope="synced")
+        plugins = [synced, SAMPLE_PLUGINS[1]]
+
+        def side_effect(plugin):
+            if plugin["id"] == "engineering@synced":
+                return {"id": "engineering@synced", "code": None, "message": plugin_manager.UNMANAGEABLE_SCOPE_MESSAGE, "unmanageable": True}
+            return {"id": plugin["id"], "code": 0, "message": "ok"}
+
+        with patch("plugin_manager.list_plugins", side_effect=[plugins, plugins]):
+            with patch("plugin_manager.update_one", side_effect=side_effect):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_update(self._make_args(all_=True))
+                    output = mock_out.getvalue()
+        self.assertIn("Skipped: 1", output)
+        self.assertIn("• engineering@synced", output)
+        self.assertIn("claude.ai", output)
+
 
 class TestRunClaude(unittest.TestCase):
     def test_finds_claude_executable(self):
@@ -365,6 +412,14 @@ class TestUninstallOne(unittest.TestCase):
         args = mock.call_args[0][0]
         self.assertEqual(args[:2], ["plugin", "uninstall"])
         self.assertIn("caveman@caveman", args)
+
+    def test_synced_scope_skipped_without_calling_cli(self):
+        synced_plugin = dict(SAMPLE_PLUGINS[0], scope="synced")
+        with patch("plugin_manager.run_claude") as mock:
+            result = plugin_manager.uninstall_one(synced_plugin)
+        mock.assert_not_called()
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("claude.ai", result["message"])
 
     def test_passes_plugin_own_scope(self):
         """A local/project-scope plugin must not default to -s user — the
@@ -472,6 +527,20 @@ class TestCmdUninstall(unittest.TestCase):
         with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
             with self.assertRaises(SystemExit):
                 plugin_manager.cmd_uninstall(self._make_args(plugins=[], yes=True))
+
+    def test_skipped_plugin_reported_but_does_not_exit_nonzero(self):
+        """A synced-scope plugin uninstall_one skips must show up in the
+        summary as skipped, not as a failure — it was never attempted."""
+        with patch("plugin_manager.list_plugins", return_value=SAMPLE_PLUGINS):
+            with patch(
+                "plugin_manager.uninstall_one",
+                return_value={"id": "caveman@caveman", "status": "skipped", "message": plugin_manager.UNMANAGEABLE_SCOPE_MESSAGE},
+            ):
+                with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                    plugin_manager.cmd_uninstall(self._make_args(plugins=["caveman"], yes=True))
+                    output = mock_out.getvalue()
+        self.assertIn("Skipped: 1", output)
+        self.assertIn("Failed: 0", output)
 
 
 SAMPLE_MCP_LIST_OUTPUT = """\

@@ -97,12 +97,41 @@ def resolve_plugins(names: list, all_plugins: list) -> list:
     return resolved
 
 
+# The only scope values `claude plugin update/uninstall -s` accepts (per
+# `--help`). Single source of truth — both call sites below check against
+# this instead of each hardcoding the set.
+CLI_MANAGEABLE_SCOPES = {"user", "project", "local", "managed"}
+
+# One-line reason surfaced for any scope outside CLI_MANAGEABLE_SCOPES
+# (currently just "synced"), phrased after the CLI's own explanation so it
+# doesn't just repeat a bare "Invalid scope" error.
+UNMANAGEABLE_SCOPE_MESSAGE = (
+    "synced from your claude.ai account with no marketplace backing — "
+    "manage it on claude.ai, or run `claude plugin disable` on this machine"
+)
+
+
+def is_cli_manageable(plugin: dict) -> bool:
+    """Whether `claude plugin update/uninstall -s <scope>` accepts this
+    plugin's scope at all.
+
+    A plugin can carry a `scope` the CLI itself never accepts as an `-s`
+    value — e.g. `"synced"` for plugins pulled from a claude.ai account
+    with no local marketplace backing. Passing that straight to `-s`
+    doesn't fail with the CLI's own explanation; it fails with a generic
+    "Invalid scope" error. Callers check this first and skip instead.
+    """
+    return plugin.get("scope") in CLI_MANAGEABLE_SCOPES
+
+
 def update_one(plugin: dict) -> dict:
     """Run `claude plugin update <id>`. Returns the raw outcome only —
     status (updated/current/failed) is resolved by the caller from a
     before/after version diff, not by guessing at stdout wording.
     """
     pid = plugin["id"]
+    if not is_cli_manageable(plugin):
+        return {"id": pid, "code": None, "message": UNMANAGEABLE_SCOPE_MESSAGE, "unmanageable": True}
     scope = plugin.get("scope", "user")
     code, out, err = run_claude(["plugin", "update", pid, "-s", scope])
     return {"id": pid, "code": code, "message": (out + err).strip()}
@@ -179,18 +208,28 @@ def cmd_update(args) -> None:
             print(f"[{i}/{total}] {p['id']}...", end=" ", flush=True)
             r = update_one(p)
             raw_by_id[p["id"]] = r
-            print("done" if r["code"] == 0 else "error")
+            print("skipped" if r.get("unmanageable") else ("done" if r["code"] == 0 else "error"))
 
     # Re-list once, after every update has run, to get real post-update
     # versions — cheaper than one `claude plugin list` per plugin and gives
     # every status the same consistent snapshot to compare against.
     after_versions = {p["id"]: p.get("version") for p in list_plugins()}
 
-    icons = {"updated": "✔", "current": "─", "failed": "✗"}
+    icons = {"updated": "✔", "current": "─", "skipped": "•", "failed": "✗"}
     results = []
     for p in targets:
         pid = p["id"]
         r = raw_by_id[pid]
+        if r.get("unmanageable"):
+            # Never sent to the CLI at all — nothing to diff versions on.
+            results.append({
+                "id": pid,
+                "status": "skipped",
+                "message": r["message"],
+                "before_version": before_versions[pid],
+                "after_version": before_versions[pid],
+            })
+            continue
         after_version = after_versions.get(pid)
         status = resolve_update_status(before_versions[pid], after_version, r["code"])
         # A zero exit code paired with "vanished from the list" would print
@@ -218,9 +257,10 @@ def cmd_update(args) -> None:
 
     updated = sum(1 for r in results if r["status"] == "updated")
     current = sum(1 for r in results if r["status"] == "current")
+    skipped = [r for r in results if r["status"] == "skipped"]
     failed = [r for r in results if r["status"] == "failed"]
 
-    print(f"\nUpdated: {updated}  Already current: {current}  Failed: {len(failed)}")
+    print(f"\nUpdated: {updated}  Already current: {current}  Skipped: {len(skipped)}  Failed: {len(failed)}")
 
     if updated:
         print(
@@ -239,6 +279,8 @@ def cmd_update(args) -> None:
 def uninstall_one(plugin: dict, keep_data: bool = False, prune: bool = False) -> dict:
     """Uninstall a single plugin. Returns result dict with status key."""
     pid = plugin["id"]
+    if not is_cli_manageable(plugin):
+        return {"id": pid, "status": "skipped", "message": UNMANAGEABLE_SCOPE_MESSAGE}
     scope = plugin.get("scope", "user")
     cli_args = ["plugin", "uninstall", pid, "-s", scope]
     if keep_data:
@@ -270,17 +312,24 @@ def cmd_uninstall(args) -> None:
 
     print(f"Uninstalling {total} plugin{'s' if total != 1 else ''}...\n")
     results = []
+    icons = {"uninstalled": "✔", "skipped": "•", "failed": "✗"}
     for i, p in enumerate(targets, 1):
         print(f"[{i}/{total}] {p['id']}...", end=" ", flush=True)
         r = uninstall_one(p, keep_data=args.keep_data, prune=args.prune)
-        print("✔" if r["status"] == "uninstalled" else "✗")
+        print(icons[r["status"]])
         results.append(r)
 
+    skipped = [r for r in results if r["status"] == "skipped"]
     failed = [r for r in results if r["status"] == "failed"]
-    succeeded = total - len(failed)
+    succeeded = total - len(failed) - len(skipped)
 
     print(f"\n{'─' * 40}")
-    print(f"Uninstalled: {succeeded}  Failed: {len(failed)}")
+    print(f"Uninstalled: {succeeded}  Skipped: {len(skipped)}  Failed: {len(failed)}")
+
+    if skipped:
+        print("\nSkipped (not manageable by this tool):")
+        for r in skipped:
+            print(f"  • {r['id']}: {r['message']}")
 
     if failed:
         print("\nFailed plugins:")
