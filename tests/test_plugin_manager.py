@@ -1156,6 +1156,17 @@ class TestMergeSnapshots(unittest.TestCase):
         ecc_machines = set(merged["plugins"]["ecc@ecc"]["present_on"])
         self.assertEqual(ecc_machines, {"linux-box@linux"})
 
+    def test_platforms_field_lists_every_platform_a_plugin_was_seen_on(self):
+        """caveman@caveman is installed on both the win32 and linux
+        machines — apply's other-platform heuristic needs this union, not
+        just whichever machine happened to be listed last."""
+        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(merged["plugins"]["caveman@caveman"]["platforms"], ["linux", "win32"])
+
+    def test_platforms_field_single_platform_when_only_seen_there(self):
+        merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
+        self.assertEqual(merged["plugins"]["ecc@ecc"]["platforms"], ["linux"])
+
     def test_skills_merged_across_machines(self):
         merged = merge_mod.merge_snapshots([SNAP_MACHINE_A, SNAP_MACHINE_B])
         self.assertIn("user/api-design", merged["skills"])
@@ -1909,6 +1920,37 @@ class TestMissingPluginIds(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestOtherPlatformOnlyIds(unittest.TestCase):
+    """No plugin manifest or `claude plugin list --json` field declares an
+    OS restriction (verified live against every installed plugin.json and
+    SKILL.md) — this heuristic is the only signal available: platforms a
+    plugin has actually been seen on, across every merged machine.
+    """
+
+    def test_flags_plugin_seen_only_on_other_platform(self):
+        merged = {"plugins": {"win-only@mp": {"platforms": ["win32"]}}}
+        result = apply_mod.other_platform_only_ids(merged, ["win-only@mp"], current_platform="linux")
+        self.assertEqual(result, ["win-only@mp"])
+
+    def test_does_not_flag_plugin_seen_on_current_platform_too(self):
+        merged = {"plugins": {"cross@mp": {"platforms": ["linux", "win32"]}}}
+        result = apply_mod.other_platform_only_ids(merged, ["cross@mp"], current_platform="linux")
+        self.assertEqual(result, [])
+
+    def test_does_not_flag_plugin_already_on_current_platform_only(self):
+        merged = {"plugins": {"native@mp": {"platforms": ["linux"]}}}
+        result = apply_mod.other_platform_only_ids(merged, ["native@mp"], current_platform="linux")
+        self.assertEqual(result, [])
+
+    def test_no_signal_beats_wrong_signal_for_missing_platforms_field(self):
+        """A `merge --out` file saved before this field existed has no
+        `platforms` key at all — must never be flagged, since there is no
+        evidence either way."""
+        merged = {"plugins": {"old@mp": {}}}
+        result = apply_mod.other_platform_only_ids(merged, ["old@mp"], current_platform="linux")
+        self.assertEqual(result, [])
+
+
 class TestAddableMarketplaceSource(unittest.TestCase):
     def test_github_record_returns_repo(self):
         self.assertEqual(
@@ -1972,6 +2014,15 @@ MERGED_FIXTURE_WITH_ADDABLE = dict(MERGED_FIXTURE, marketplaces={
 })
 
 
+MERGED_FIXTURE_WITH_OTHER_PLATFORM = dict(MERGED_FIXTURE, plugins={
+    "caveman@caveman": {
+        "present_on": {"win-box@win32": {"version": "1.0", "scope": "user", "enabled": True}},
+        "drift": [],
+        "platforms": ["win32"],
+    },
+})
+
+
 class TestLangMessagesParity(unittest.TestCase):
     def test_en_and_zh_have_identical_keys(self):
         """_msg() does table[key] — a key present in one language dict but
@@ -1985,7 +2036,7 @@ class TestLangMessagesParity(unittest.TestCase):
 
 
 class TestCmdApply(unittest.TestCase):
-    def _args(self, merged_file, plugins=None, all_=False, yes=False, scope=None, lang=None):
+    def _args(self, merged_file, plugins=None, all_=False, yes=False, scope=None, lang=None, include_other_platforms=False):
         class Args:
             pass
         a = Args()
@@ -1995,6 +2046,7 @@ class TestCmdApply(unittest.TestCase):
         a.yes = yes
         a.scope = scope
         a.lang = lang
+        a.include_other_platforms = include_other_platforms
         return a
 
     def _write_merged(self, tmp):
@@ -2010,6 +2062,48 @@ class TestCmdApply(unittest.TestCase):
                     apply_mod.cmd_apply(self._args(str(merged)))
                     output = mock_out.getvalue()
         self.assertIn("Nothing missing", output)
+
+    def _write_other_platform_merged(self, tmp):
+        p = Path(tmp) / "merged.json"
+        p.write_text(json.dumps(MERGED_FIXTURE_WITH_OTHER_PLATFORM), encoding="utf-8")
+        return p
+
+    def _make_caveman_marketplace(self, tmp):
+        loc = Path(tmp) / "mp"
+        (loc / ".claude-plugin").mkdir(parents=True)
+        (loc / ".claude-plugin" / "marketplace.json").write_text(
+            json.dumps({"plugins": [{"name": "caveman", "description": "terse mode"}]}), encoding="utf-8"
+        )
+        return loc
+
+    def test_other_platform_only_plugin_skipped_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_other_platform_merged(tmp)
+            loc = self._make_caveman_marketplace(tmp)
+            with patch("plugin_sync.claude_cli.list_plugins", return_value=[]):
+                with patch("plugin_sync.claude_cli.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("sys.platform", "linux"):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            apply_mod.cmd_apply(self._args(str(merged), all_=True))
+                            output = mock_out.getvalue()
+        self.assertIn("only ever seen on a different platform", output)
+        self.assertIn("seen only on: win32; this machine is linux", output)
+        self.assertIn("Nothing else missing", output)
+        self.assertNotIn("Installable", output)  # never reached — filtered before marketplace classification
+
+    def test_other_platform_only_plugin_included_with_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            merged = self._write_other_platform_merged(tmp)
+            loc = self._make_caveman_marketplace(tmp)
+            with patch("plugin_sync.claude_cli.list_plugins", return_value=[]):
+                with patch("plugin_sync.claude_cli.run_claude", return_value=(0, json.dumps([{"name": "caveman", "installLocation": str(loc)}]), "")):
+                    with patch("sys.platform", "linux"):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            apply_mod.cmd_apply(self._args(str(merged), all_=True, include_other_platforms=True))
+                            output = mock_out.getvalue()
+        self.assertIn("Included despite", output)
+        self.assertIn("Installable", output)
+        self.assertIn("terse mode", output)
 
     def test_dry_run_lists_installable_and_skipped_with_description(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -119,6 +119,17 @@ def merge_snapshots(snapshots: list) -> dict:
         if len({i["enabled"] for i in infos}) > 1:
             drift.append("enabled")
         entry["drift"] = drift
+        # Neither `claude plugin list --json` nor a plugin's own manifest
+        # declares an OS restriction (checked live: zero "os"/"platform"
+        # field across every installed plugin.json/SKILL.md) — there is
+        # nothing authoritative to query. This is the next best signal:
+        # every platform this plugin has actually been seen installed on,
+        # derived from the "@platform" suffix machine_key already carries.
+        # `apply` uses it to warn about (and skip by default) a plugin
+        # that has only ever shown up on a different platform than the
+        # one running `apply` — heuristic, not proof, since "never seen
+        # elsewhere" also just means "not installed there yet".
+        entry["platforms"] = sorted({key.rsplit("@", 1)[1] for key in entry["present_on"]})
 
     for name, entry in marketplaces.items():
         infos = list(entry["present_on"].values())

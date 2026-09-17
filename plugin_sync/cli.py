@@ -84,6 +84,11 @@ def main() -> None:
     apply_.add_argument("-y", "--yes", action="store_true", help="Actually install (default is dry-run preview)")
     apply_.add_argument("--scope", choices=["user", "project", "local"], help="Install scope (required with -y)")
     apply_.add_argument("--lang", choices=["en", "zh"], help="Language for this tool's own prompts (default: en)")
+    apply_.add_argument(
+        "--include-other-platforms",
+        action="store_true",
+        help="Also consider plugins only ever seen on a different platform than this machine (skipped by default)",
+    )
 
     args = parser.parse_args()
     if args.command == "list":
