@@ -45,7 +45,7 @@
 | 特性 | 说明 |
 |---|---|
 | **零依赖** | 纯标准库，免安装第三方包 |
-| **跨机同步** | `save` → `merge` → `apply`，一键补装本机缺的插件 |
+| **跨机同步** | `save` → `diff` → `apply`，一键补装本机缺的插件 |
 | **脱敏快照** | `identity`/`machine` 必须是标签，**不能填真实邮箱或主机名** |
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
 | **全新机器也能装** | 快照连插件的 marketplace 源（GitHub repo / git url）一起记，`apply -y` 自动帮你 `marketplace add` |

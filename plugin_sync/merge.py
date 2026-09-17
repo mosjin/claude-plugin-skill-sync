@@ -153,14 +153,37 @@ def merge_snapshots(snapshots: list) -> dict:
     }
 
 
-def _print_merge_table(merged: dict) -> None:
+def _plugin_is_identical(entry: dict, machine_keys: list) -> bool:
+    """No drift AND present on every machine — nothing here for a diff to
+    say. Only meaningful with 2+ machines; see the single-machine guard in
+    _print_merge_table for why this is never even called there."""
+    return not entry["drift"] and len(entry["present_on"]) == len(machine_keys)
+
+
+def _skill_is_identical(entry: dict, machine_keys: list) -> bool:
+    return len(entry["present_on"]) == len(machine_keys)
+
+
+def _print_merge_table(merged: dict, full: bool = False) -> None:
+    """Compact by default (#13): a real machine can carry hundreds of
+    skills and dozens of plugins, nearly all identical across machines —
+    printing every one of them buries the handful that actually differ.
+    Collapsing only kicks in with 2+ machines to compare; a single-machine
+    `diff` has no "identical to what" baseline, so every entry is real
+    inventory information and stays visible regardless of `full`.
+    """
     machine_keys = sorted(merged["machines"])
+    compact = not full and len(machine_keys) > 1
     print(f"Identity: {merged['identity']}")
     print(f"Machines: {', '.join(machine_keys)}\n")
 
     print("Plugins:")
+    identical = 0
     for pid in sorted(merged["plugins"]):
         entry = merged["plugins"][pid]
+        if compact and _plugin_is_identical(entry, machine_keys):
+            identical += 1
+            continue
         marker = f" ({'/'.join(entry['drift'])} drift)" if entry["drift"] else ""
         where = ", ".join(
             f"{m}={info['version']}" for m, info in sorted(entry["present_on"].items())
@@ -168,14 +191,22 @@ def _print_merge_table(merged: dict) -> None:
         missing = [m for m in machine_keys if m not in entry["present_on"]]
         missing_note = f"  [missing on: {', '.join(missing)}]" if missing else ""
         print(f"  {pid}{marker}: {where}{missing_note}")
+    if identical:
+        print(f"  ({identical} more identical across all machines — pass --full to show)")
 
     print("\nSkills:")
+    identical = 0
     for key in sorted(merged["skills"]):
         entry = merged["skills"][key]
+        if compact and _skill_is_identical(entry, machine_keys):
+            identical += 1
+            continue
         where = ", ".join(sorted(entry["present_on"]))
         missing = [m for m in machine_keys if m not in entry["present_on"]]
         missing_note = f"  [missing on: {', '.join(missing)}]" if missing else ""
         print(f"  {key}: {where}{missing_note}")
+    if identical:
+        print(f"  ({identical} more identical across all machines — pass --full to show)")
 
     if merged["notes"]:
         print("\nNotes:")
@@ -190,7 +221,7 @@ def cmd_merge(args) -> None:
         merged = merge_snapshots(snapshots)
     except ValueError as exc:
         sys.exit(f"Error: {exc}")
-    _print_merge_table(merged)
+    _print_merge_table(merged, full=getattr(args, "full", False))
 
     if args.out:
         out_path = Path(args.out)

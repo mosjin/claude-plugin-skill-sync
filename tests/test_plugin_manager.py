@@ -1242,12 +1242,13 @@ class TestMergeSnapshots(unittest.TestCase):
 
 
 class TestCmdMerge(unittest.TestCase):
-    def _args(self, dir_, out=None):
+    def _args(self, dir_, out=None, full=False):
         class Args:
             pass
         a = Args()
         a.dir = dir_
         a.out = out
+        a.full = full
         return a
 
     def test_prints_drift_and_missing_machines(self):
@@ -1296,6 +1297,100 @@ class TestCmdMerge(unittest.TestCase):
             with patch("sys.stdout", new_callable=StringIO):
                 merge_mod.cmd_merge(self._args(tmp, out=str(out_path)))
                 merge_mod.cmd_merge(self._args(tmp))  # re-merge same dir
+
+
+COMPACT_TEST_MERGED = {
+    "identity": "mosjin",
+    "machines": {"a@linux": {}, "b@linux": {}},
+    "plugins": {
+        "identical@mp": {
+            "present_on": {"a@linux": {"version": "1.0"}, "b@linux": {"version": "1.0"}},
+            "drift": [],
+        },
+        "drifted@mp": {
+            "present_on": {"a@linux": {"version": "1.0"}, "b@linux": {"version": "2.0"}},
+            "drift": ["version"],
+        },
+        "missing@mp": {
+            "present_on": {"a@linux": {"version": "1.0"}},
+            "drift": [],
+        },
+    },
+    "skills": {
+        "user/identical-skill": {"present_on": {"a@linux": True, "b@linux": True}},
+        "user/partial-skill": {"present_on": {"a@linux": True}},
+    },
+    "notes": [],
+}
+
+
+class TestPrintMergeTableCompactOutput(unittest.TestCase):
+    """#13: a real machine's diff can carry hundreds of skills, nearly all
+    identical across machines — printing every one buries the handful
+    that actually differ. Default output hides fully-identical rows;
+    --full restores the old always-show-everything behavior.
+    """
+
+    def test_compact_hides_identical_plugin_by_default(self):
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            merge_mod._print_merge_table(COMPACT_TEST_MERGED)
+            output = mock_out.getvalue()
+        self.assertNotIn("identical@mp", output)
+        self.assertIn("drifted@mp", output)
+        self.assertIn("missing@mp", output)
+        self.assertIn("1 more identical across all machines", output)
+
+    def test_compact_hides_identical_skill_by_default(self):
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            merge_mod._print_merge_table(COMPACT_TEST_MERGED)
+            output = mock_out.getvalue()
+        self.assertNotIn("identical-skill", output)
+        self.assertIn("partial-skill", output)
+
+    def test_full_flag_shows_every_entry(self):
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            merge_mod._print_merge_table(COMPACT_TEST_MERGED, full=True)
+            output = mock_out.getvalue()
+        self.assertIn("identical@mp", output)
+        self.assertIn("identical-skill", output)
+        self.assertNotIn("more identical across all machines", output)
+
+    def test_single_machine_never_collapses_even_without_full(self):
+        """No comparison target with only one machine — every entry is
+        real inventory, not noise, so nothing should ever be hidden."""
+        single = {
+            "identity": "mosjin",
+            "machines": {"a@linux": {}},
+            "plugins": {
+                "solo@mp": {"present_on": {"a@linux": {"version": "1.0"}}, "drift": []},
+            },
+            "skills": {
+                "user/solo-skill": {"present_on": {"a@linux": True}},
+            },
+            "notes": [],
+        }
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            merge_mod._print_merge_table(single)
+            output = mock_out.getvalue()
+        self.assertIn("solo@mp", output)
+        self.assertIn("solo-skill", output)
+        self.assertNotIn("more identical across all machines", output)
+
+    def test_cmd_merge_forwards_full_flag_to_print(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            with patch("plugin_sync.merge._print_merge_table") as mock_print:
+                merge_mod.cmd_merge(TestCmdMerge()._args(tmp, full=True))
+        mock_print.assert_called_once()
+        self.assertEqual(mock_print.call_args.kwargs["full"], True)
+
+    def test_cmd_merge_defaults_full_to_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.json").write_text(json.dumps(SNAP_MACHINE_A), encoding="utf-8")
+            with patch("plugin_sync.merge._print_merge_table") as mock_print:
+                merge_mod.cmd_merge(TestCmdMerge()._args(tmp))
+        mock_print.assert_called_once()
+        self.assertEqual(mock_print.call_args.kwargs["full"], False)
 
 
 class TestRunGh(unittest.TestCase):

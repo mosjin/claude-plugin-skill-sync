@@ -39,12 +39,22 @@ def main() -> None:
         help=f"Snapshot output dir (default: ${snapshots.ENV_SNAPSHOT_DIR} or ./{snapshots.DEFAULT_SNAPSHOT_DIR}, local-only)",
     )
 
-    merge = sub.add_parser("merge", help="Merge snapshots from a directory into one drift view")
+    # Named `diff` (not `merge`) on purpose: unlike `git merge`, this never
+    # touches any file outside --out — it only compares snapshots and
+    # prints/writes a read-only drift report. `merge` is kept as an alias
+    # so muscle memory from before this rename still works; `apply` is the
+    # command that actually installs anything.
+    merge = sub.add_parser("diff", aliases=["merge"], help="Compare snapshots from a directory and report drift (read-only — use `apply` to actually install anything)")
     merge.add_argument(
         "--dir",
         help=f"Snapshot input dir (default: ${snapshots.ENV_SNAPSHOT_DIR} or ./{snapshots.DEFAULT_SNAPSHOT_DIR})",
     )
-    merge.add_argument("--out", help="Optional path to also write the merged view as JSON")
+    merge.add_argument("--out", help="Optional path to also write the diff view as JSON")
+    merge.add_argument(
+        "--full",
+        action="store_true",
+        help="Show every plugin/skill, including ones identical across all machines (default: only drift/missing)",
+    )
 
     upload = sub.add_parser("upload", help="Upload a snapshot file to a GitHub Gist")
     upload.add_argument("file", help="Path to the snapshot JSON file to upload (printed by `save`)")
@@ -77,8 +87,8 @@ def main() -> None:
     gist_visibility.add_argument("--public", action="store_true", help="Only show public gists")
     gist_visibility.add_argument("--secret", action="store_true", help="Only show secret gists")
 
-    apply_ = sub.add_parser("apply", help="Install plugins missing on this machine from a merged snapshot")
-    apply_.add_argument("merged_file", help="Path to a `merge --out` JSON file")
+    apply_ = sub.add_parser("apply", help="Install plugins missing on this machine from a diff view")
+    apply_.add_argument("merged_file", help="Path to a `diff --out` JSON file")
     apply_.add_argument("plugins", nargs="*", metavar="plugin", help="Specific plugin id(s) to install")
     apply_.add_argument("--all", action="store_true", help="Install everything missing")
     apply_.add_argument("-y", "--yes", action="store_true", help="Actually install (default is dry-run preview)")
@@ -101,7 +111,7 @@ def main() -> None:
         claude_cli.cmd_doctor(args)
     elif args.command == "save":
         snapshots.cmd_save(args)
-    elif args.command == "merge":
+    elif args.command in ("diff", "merge"):
         merge_mod.cmd_merge(args)
     elif args.command == "upload":
         gist.cmd_upload(args)

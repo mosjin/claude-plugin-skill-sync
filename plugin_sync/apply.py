@@ -56,7 +56,7 @@ def load_merged(path: Path) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         sys.exit(f"Error reading {path}: {exc}")
     if not isinstance(data, dict) or data.get("kind") != "merged":
-        sys.exit(f"Error: {path} is not a `merge --out` file (expected kind='merged')")
+        sys.exit(f"Error: {path} is not a `diff --out` file (expected kind='merged')")
     return data
 
 
