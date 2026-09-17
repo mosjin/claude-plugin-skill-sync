@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -38,7 +38,7 @@ installed plugins/skills across machines.
 > tracking which plugins are installed and whether versions line up.
 
 This tool turns "what's installed" into a snapshot you can save,
-desensitize, merge for a drift view across machines, and apply to
+desensitize, diff across machines, and apply to
 auto-install what's missing — no cloud account required, just local
 JSON + an optional GitHub Gist transport. Plugins only — it never touches
 anything outside `~/.claude`; MCP servers outside the plugin system are
@@ -49,12 +49,12 @@ surfaced (not managed) via [`doctor`](#commands).
 | Feature | Description |
 |---|---|
 | **Zero dependencies** | Stdlib only, nothing to install |
-| **Cross-machine sync** | `save` → `merge` → `apply` installs whatever's missing on a machine |
+| **Cross-machine sync** | `save` → `diff` → `apply` installs whatever's missing on a machine |
 | **Desensitized snapshots** | `identity`/`machine` are required labels, **never a raw email or hostname** |
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
 | **Works on a fresh machine** | Snapshots record each plugin's marketplace source (GitHub repo / git url) too — `apply -y` runs `marketplace add` for you |
 | **Never guesses installs** | Plugins with no source on record (e.g. a marketplace added from a local path) are listed and skipped, **not force-installed** |
-| **222 tests** | All mocked — real plugins are never touched during testing |
+| **243 tests** | All mocked — real plugins are never touched during testing |
 | **Modular internals** | Implementation lives in the `plugin_sync/` package, split by domain (claude_cli/snapshots/marketplaces/merge/gist/apply) — `plugin_manager.py` is just the entry-point shim |
 
 ## Quick Start (beginner-friendly)
@@ -76,67 +76,124 @@ Only using one machine? That's it. Want to sync plugins across machines? See the
 
 ## Full Cross-Machine Sync Walkthrough
 
-Typical scenario: machine A has a pile of plugins installed, and you want
-machine B to end up with the same set. Only the first `fetch` might need an
-extra id typed in — every other step is copy-paste.
+> **The command names borrow git's vocabulary, but the semantics aren't
+> identical**: `fetch` really does behave like `git fetch` — it pulls
+> remote data down. But `diff` (its real name; `merge` is kept only as an
+> alias) is **not** `git merge` — it only compares, never touches a file.
+> Read-only, full stop. The step that actually "applies the diff" is
+> `apply` — not `diff`, and not `update` either (`update` only upgrades
+> plugins already installed on this machine to their own latest version;
+> it has nothing to do with this sync system).
+
+### Quick Reference
+
+Don't want the long version — just want to know what to type? This is the
+whole thing, per machine:
+
+| Machine | Commands |
+|---|---|
+| **Source** (already has the plugins, wants another machine to match) | `save` → `upload` |
+| **Destination** (wants to sync in) | `fetch` → `diff` (optional — just a look at what differs) → `apply` |
+
+Keep reading for the full commands plus real output from each step.
+
+### Full Steps (real captured output)
+
+Below, the two machines are called **src** (already has the plugins) and
+**dest** (wants them). Every code block right after a command is this
+tool's actual output (not hand-written) — your own plugin names/counts
+will differ, but the shape will match.
 
 ```bash
-# ① Machine A — save a snapshot of this machine
-python plugin_manager.py save --identity mosjin --machine work-laptop
-
-# ② Machine A — upload it to a GitHub Gist
-#    First upload auto-creates a secret gist, caches its id in snapshots/.gist_id.
-#    Uploading again from this machine later replaces its previous snapshot
-#    in the gist by default (no unbounded pile-up); pass --keep-history to
-#    keep every upload instead.
-python plugin_manager.py upload snapshots/<file>.json
+# On src: save a snapshot of this machine
+python plugin_manager.py save --identity mosjin --machine src
+```
+```
+Saved snapshot: snapshots/mosjin__src__linux__2026-09-17__demo0001.json
+  30 plugin(s), 549 skill(s)
 ```
 
 ```bash
-# ③ Machine B — save its own snapshot too (optional, so the drift view
-#    below also shows what machine B already has)
-python plugin_manager.py save --identity mosjin --machine home-pc
+# On src: upload it to a GitHub Gist (first upload auto-creates a secret
+# gist and caches its id in snapshots/.gist_id; uploading again from this
+# machine later replaces its previous snapshot — pass --keep-history to
+# keep every upload instead)
+python plugin_manager.py upload snapshots/mosjin__src__linux__2026-09-17__demo0001.json
+```
+```
+Created new gist (https://gist.github.com/<your-account>/<new-gist-id>)
+  secret = unlisted, not private — anyone with the link can read it.
 
-# ④ Machine B — fetch machine A's snapshot
-#    This machine has never fetched/uploaded before, so there's no cached
-#    id — but as long as this GitHub account has exactly one gist this
-#    tool created, fetch finds and caches it automatically. No id typing:
-python plugin_manager.py fetch
+Cached in snapshots/.gist_id — future upload/fetch in this dir reuse it automatically.
+```
 
-# More than one such gist on this account (synced more than one set before)?
-# Check first, then be explicit:
-python plugin_manager.py gist-list
-python plugin_manager.py fetch --gist-id <id>
+```bash
+# On dest: fetch what src uploaded — auto-discovered when this account
+# has exactly one such gist, no id typing needed
+python plugin_manager.py fetch --dir snapshots
+```
+```
+Fetched gist <gist_id>: 1 snapshot(s) found, 1 new one(s) copied into snapshots
+```
 
-# ⑤ Machine B — merge both snapshots into a drift view
-python plugin_manager.py merge --dir snapshots --out merged.json
+```bash
+# On dest: compare both snapshots (read-only — installs nothing)
+python plugin_manager.py diff --dir snapshots --out merged.json
+```
+```
+Identity: mosjin
+Machines: dest@linux, src@linux
 
-# ⑥ Machine B — preview what would install, then actually install with -y
+Plugins:
+  agentmemory@agentmemory: src@linux=1.0.0  [missing on: dest@linux]
+  (1 more identical across all machines — pass --full to show)
+
+Skills:
+  (1 more identical across all machines — pass --full to show)
+
+Merged view written to: merged.json
+```
+`[missing on: dest@linux]` is "src has it, dest doesn't" — that's what
+`apply` actually installs. The 1 collapsed entry is identical on both
+sides; `--full` shows everything.
+
+```bash
+# On dest: preview first — nothing installs without -y
 python plugin_manager.py apply merged.json --all --scope user
-python plugin_manager.py apply merged.json --all -y --scope user
+```
+```
+Installable (marketplace already available here):
+  agentmemory@agentmemory  (on: src@linux)
+    Persistent memory for AI coding agents -- captures tool usage, compresses via LLM, injects context into future sessions
 
-# ⑦ Machine B — bring everything (including what was just installed) up to date
-python plugin_manager.py update --all
+Dry run — pass -y to actually install. Nothing was installed.
 ```
 
-Even if machine B is a completely fresh install with zero marketplaces
+```bash
+# Looks right — install for real
+python plugin_manager.py apply merged.json --all -y --scope user
+```
+
+Even if dest is a completely fresh install with zero marketplaces
 configured, this still works: the snapshot recorded each plugin's
 marketplace source (a GitHub repo or git url) too, so `apply -y` runs
 `marketplace add` for you before installing. Only a marketplace whose
 recorded source is a local path (not portable across machines) gets
-skipped with a note to add it by hand.
+skipped with a note to add it by hand; a plugin only ever seen on a
+different platform (e.g. a Windows-only tool) is skipped too, by default —
+pass `--include-other-platforms` to force it anyway.
 
 > **Standalone skills aren't `apply`'s job**: a skill bundled inside a
 > plugin installs automatically along with that plugin. A "standalone"
 > skill — living directly under `~/.claude/skills/` or a project's
 > `.claude/skills/`, not part of any plugin — is only recorded by name in
-> a snapshot (for the `merge` drift view) and is **never** installed or
+> a snapshot (for the `diff` view) and is **never** installed or
 > transferred by `apply`. Sync those by hand for now.
 
-Want to sync the other direction later (push what machine B has back to
-machine A)? `save` + `upload` on machine B — `.gist_id` is already cached
-there, so it adds the new snapshot to the same gist instead of creating a
-second one — then `fetch` on machine A.
+Want to sync the other direction later (push what dest has back to src)?
+`save` + `upload` on dest — `.gist_id` is already cached there, so it adds
+the new snapshot to the same gist instead of creating a second one — then
+`fetch` on src.
 
 ## Commands
 
@@ -146,11 +203,11 @@ second one — then `fetch` on machine A.
 | [`update`](#update) | Update one/multiple/all plugins |
 | [`doctor`](#doctor) | List standalone MCP servers this tool can't touch |
 | [`uninstall` / `remove`](#uninstall--remove) | Remove plugins |
-| [`save`](#save--merge--upload--fetch--apply) | Save a desensitized snapshot of this machine |
-| [`merge`](#save--merge--upload--fetch--apply) | Merge snapshots from multiple machines into a drift view |
-| [`upload` / `fetch`](#save--merge--upload--fetch--apply) | Sync snapshots via GitHub Gist |
+| [`save`](#save--diff--upload--fetch--apply) | Save a desensitized snapshot of this machine |
+| [`diff` (alias `merge`)](#save--diff--upload--fetch--apply) | Compare snapshots from multiple machines into a drift view (read-only) |
+| [`upload` / `fetch`](#save--diff--upload--fetch--apply) | Sync snapshots via GitHub Gist |
 | [`gist-list`](#gist-list) | List gists this tool created — find an id without opening a browser |
-| [`apply`](#save--merge--upload--fetch--apply) | Install whatever's missing on this machine per a snapshot |
+| [`apply`](#save--diff--upload--fetch--apply) | Install whatever's missing on this machine per a snapshot |
 
 ### list
 
@@ -190,17 +247,22 @@ python plugin_manager.py update --all --parallel
 ```
 
 ```
-Updating 3 plugins...
+Updating 2 plugins...
 
-[1/3] caveman@caveman... ✔
-[2/3] ecc@ecc... ─
-[3/3] eduforge@eduforge... ✔
+[1/2] ecc@synced... skipped
+[2/2] leansvg@leansvg... done
 
 ────────────────────────────────────────
-Updated: 2  Already current: 1  Failed: 0
+Results (version before → after):
+  • ecc@synced  synced from your claude.ai account with no marketplace backing — manage it on claude.ai, or run `claude plugin disable` on this machine
+  ─ leansvg@leansvg  0.1.14 (unchanged)
+
+Updated: 0  Already current: 1  Skipped: 1  Failed: 0
 ```
 
-Icons: `✔` updated · `─` already current · `✗` failed
+Icons: `✔` updated · `─` already current · `•` skipped (e.g. a plugin
+synced from your claude.ai account with no marketplace backing this
+machine can manage) · `✗` failed
 
 Status is resolved by comparing version strings before and after, not by
 guessing at CLI output text — it detects a version change, not arbitrary
@@ -253,11 +315,14 @@ python plugin_manager.py uninstall caveman -y --prune
 python plugin_manager.py remove caveman -y
 ```
 
-### save / merge / upload / fetch / apply
+### save / diff / upload / fetch / apply
 
-Save a desensitized snapshot of installed plugins and skills, merge
-snapshots from multiple machines into one drift view, and (optionally)
-install whatever's missing on a given machine.
+Save a desensitized snapshot of installed plugins and skills, compare
+snapshots from multiple machines into one read-only drift view, and
+(optionally) install whatever's missing on a given machine. For the full
+walkthrough with real captured output, see
+[Full Cross-Machine Sync Walkthrough](#full-cross-machine-sync-walkthrough) —
+this section is just a flag reference.
 
 ```bash
 # Save a snapshot of this machine (identity/machine are required labels,
@@ -269,11 +334,18 @@ python plugin_manager.py save --identity mosjin --machine work-laptop
 # across machines yourself, or use upload/fetch below instead.
 python plugin_manager.py save --identity mosjin --machine work-laptop --dir /path/to/synced/dir
 
-# Merge every snapshot in a directory into one per-machine drift view
-python plugin_manager.py merge --dir /path/to/synced/dir
+# Compare every snapshot in a directory into one per-machine drift view
+# (read-only — installs nothing). `merge` is kept as an alias of the same
+# command for anyone used to the old name.
+python plugin_manager.py diff --dir /path/to/synced/dir
 
-# Also write the merged view to a file (for `apply` later)
-python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
+# By default only drifted/missing entries print — identical ones collapse
+# into a one-line count. On a real machine with hundreds of skills this
+# turns hundreds of lines into a handful. Pass --full to see everything.
+python plugin_manager.py diff --dir /path/to/synced/dir --full
+
+# Also write the diff view to a file (for `apply` later)
+python plugin_manager.py diff --dir /path/to/synced/dir --out merged.json
 
 # Sync via a GitHub Gist instead of your own transport (reuses `gh` auth).
 # First upload creates a secret gist and caches its id next to the
@@ -286,13 +358,15 @@ python plugin_manager.py upload snapshots/<file>.json
 python plugin_manager.py upload snapshots/<file>.json --keep-history
 python plugin_manager.py fetch --gist-id <id>
 
-# Install on this machine whatever the merged view shows is missing here.
-# Dry-run by default; -y (plus --scope) actually installs. Three cases:
+# Install on this machine whatever the diff view shows is missing here.
+# Dry-run by default; -y (plus --scope) actually installs. Four cases:
 # 1) marketplace already here -> installs directly.
 # 2) not here, but the snapshot recorded a GitHub repo / git url for it
 #    -> -y runs `marketplace add` first, then installs.
 # 3) neither (e.g. its only recorded source is a local path) -> listed
 #    and skipped, never guessed at.
+# 4) only ever seen on a different platform (e.g. Windows-only) -> skipped
+#    by default; pass --include-other-platforms to force it anyway.
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # Chinese prompts
 ```
@@ -341,7 +415,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-222 tests, all subprocess calls mocked — no real plugins are modified during testing.
+243 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 

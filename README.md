@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#环境要求)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen)](#测试)
+[![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)](#测试)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#跨平台)
 
 [English](README.en.md)
@@ -36,7 +36,7 @@
 
 > 一个人常在多台机器上用 Claude Code，插件装了哪些、版本是否一致，全靠手动对照。
 
-本工具把「装了什么」做成可保存、可脱敏分享、可合并对比、可一键补装的快照 ——
+本工具把「装了什么」做成可保存、可脱敏分享、可对比差异、可一键补装的快照 ——
 不依赖云端账号体系，纯本地 JSON + 可选 GitHub Gist 传输。只管 plugin，不碰
 `~/.claude` 之外的东西；非 plugin 形式的 MCP server 用 [`doctor`](#命令一览) 列出提醒，不代管。
 
@@ -50,7 +50,7 @@
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
 | **全新机器也能装** | 快照连插件的 marketplace 源（GitHub repo / git url）一起记，`apply -y` 自动帮你 `marketplace add` |
 | **只装认识源的** | 没记录到可用源（比如本地路径添加的 marketplace）的插件，只列出跳过，**绝不瞎猜安装** |
-| **222 项测试** | 全 mock，测试不碰真实插件 |
+| **243 项测试** | 全 mock，测试不碰真实插件 |
 | **模块化** | 实现拆到 `plugin_sync/` 包，按领域分模块（claude_cli/snapshots/marketplaces/merge/gist/apply），`plugin_manager.py` 只是入口 shim |
 
 ## 快速上手（新手向）
@@ -72,57 +72,111 @@ python plugin_manager.py update --all
 
 ## 跨机同步完整流程
 
-典型场景：机器 A 装了一堆插件，想让机器 B 也装成一样的。全程只有第一次 `fetch`
-可能要多敲一个 id，其余步骤照抄命令即可。
+> **这里的命令名字借用了 git 的词汇，但语义不完全一样**：`fetch` 确实跟
+> `git fetch` 一样，把远端数据拉到本地；但 `diff`（本名如此，`merge` 只是保留
+> 的别名）**不是** `git merge`——它只对比、不改任何文件，纯只读报告。真正"把
+> 差异应用到本地"这一步是 `apply`，是它,不是 `diff`,也不是 `update`（`update`
+> 只管本机已装插件升到各自最新版，跟这套同步系统完全无关）。
+
+### 典型用法速览
+
+不想看长篇解释、只想知道该敲什么？两台机器各自要做的事就这么多：
+
+| 机器 | 要跑的命令 |
+|---|---|
+| **源机器**（已经装好插件，想让别的机器也一样） | `save` → `upload` |
+| **目标机器**（想同步过来） | `fetch` → `diff`（可选，只是看一眼差异）→ `apply` |
+
+往下看完整命令 + 每一步真实跑出来长什么样。
+
+### 完整步骤（真实跑出来的输出）
+
+下面把两台机器分别叫 **src**（已经装好插件的那台）和 **dest**（想同步过来的
+那台）。每条命令后面紧跟的代码块都是这个工具真实跑出来的输出（不是手写的
+示例），你跑出来的插件名字/数量会不一样，但格式一样。
 
 ```bash
-# ① 机器 A —— 保存本机快照
-python plugin_manager.py save --identity mosjin --machine work-laptop
-
-# ② 机器 A —— 上传到 GitHub Gist
-#    首次上传自动建一个 secret gist，id 缓存进 snapshots/.gist_id。
-#    以后在这台机器上再传，默认会把这台机器的旧快照顶替掉（不无限堆积）；
-#    想留历史每次都加一份，传 --keep-history。
-python plugin_manager.py upload snapshots/<file>.json
+# 在 src 上：保存本机快照
+python plugin_manager.py save --identity mosjin --machine src
+```
+```
+Saved snapshot: snapshots/mosjin__src__linux__2026-09-17__demo0001.json
+  30 plugin(s), 549 skill(s)
 ```
 
 ```bash
-# ③ 机器 B —— 保存本机快照（可选，让下面的差异视图里也能看到机器 B 装了什么）
-python plugin_manager.py save --identity mosjin --machine home-pc
+# 在 src 上：传到 GitHub Gist（第一次自动建一个 secret gist，
+# id 缓存进 snapshots/.gist_id；同一台机器以后再传会顶替掉这台机器的旧快照，
+# 想保留每次历史就加 --keep-history）
+python plugin_manager.py upload snapshots/mosjin__src__linux__2026-09-17__demo0001.json
+```
+```
+Created new gist (https://gist.github.com/<你的账号>/<新 gist 的 id>)
+  secret = unlisted, not private — anyone with the link can read it.
 
-# ④ 机器 B —— 拉取机器 A 的快照
-#    这台机器从没 fetch/upload 过，没有缓存的 id —— 但只要这个 GitHub
-#    账号下只有一个这个工具建的 gist，fetch 会自动找到并缓存，不用手敲 id：
-python plugin_manager.py fetch
+Cached in snapshots/.gist_id — future upload/fetch in this dir reuse it automatically.
+```
 
-# 账号下有不止一个这类 gist（同步过好几套）？先看一眼再指定：
-python plugin_manager.py gist-list
-python plugin_manager.py fetch --gist-id <id>
+```bash
+# 在 dest 上：拉取 src 传上去的快照 —— 账号下只有这一个 gist 时自动找到，不用敲 id
+python plugin_manager.py fetch --dir snapshots
+```
+```
+Fetched gist <gist_id>: 1 snapshot(s) found, 1 new one(s) copied into snapshots
+```
 
-# ⑤ 机器 B —— 合并两份快照，生成差异视图
-python plugin_manager.py merge --dir snapshots --out merged.json
+```bash
+# 在 dest 上：对比两份快照（只读，不装任何东西）
+python plugin_manager.py diff --dir snapshots --out merged.json
+```
+```
+Identity: mosjin
+Machines: dest@linux, src@linux
 
-# ⑥ 机器 B —— 先预览会装什么，确认没问题再加 -y 真正安装
+Plugins:
+  agentmemory@agentmemory: src@linux=1.0.0  [missing on: dest@linux]
+  (1 more identical across all machines — pass --full to show)
+
+Skills:
+  (1 more identical across all machines — pass --full to show)
+
+Merged view written to: merged.json
+```
+`[missing on: dest@linux]` 就是"src 有、dest 没有"的插件——这才是 `apply`
+真正会去装的东西；折叠掉的那 1 条是两边完全一样的，`--full` 能看全量。
+
+```bash
+# 在 dest 上：先预览，不加 -y 什么都不会装
 python plugin_manager.py apply merged.json --all --scope user
-python plugin_manager.py apply merged.json --all -y --scope user
+```
+```
+Installable (marketplace already available here):
+  agentmemory@agentmemory  (on: src@linux)
+    Persistent memory for AI coding agents -- captures tool usage, compresses via LLM, injects context into future sessions
 
-# ⑦ 机器 B —— 把所有插件（含刚补装的）都更新到最新版本
-python plugin_manager.py update --all
+Dry run — pass -y to actually install. Nothing was installed.
 ```
 
-即使机器 B 是台全新电脑、一个 marketplace 都没加过也没关系：快照里连插件的
+```bash
+# 确认没问题，加 -y 真正安装
+python plugin_manager.py apply merged.json --all -y --scope user
+```
+
+即使 dest 是台全新电脑、一个 marketplace 都没加过也没关系：快照里连插件的
 marketplace 源（GitHub repo 或 git url）都记了，`apply -y` 会自动先
 `marketplace add` 再装插件，不用你手动一个个加源。只有源本身就是本地路径
-（没法跨机器复用）的 marketplace 才会被跳过，提示手动处理。
+（没法跨机器复用）的 marketplace 才会被跳过，提示手动处理；只在别的平台见过
+的插件（比如 Windows 专属工具）默认也会跳过并提示，加 `--include-other-platforms`
+才会强制考虑。
 
 > **独立 skill 不在 `apply` 管辖范围**：打包在 plugin 里的 skill 会随插件一起装好，
 > 不用额外操作；但单独放在 `~/.claude/skills/` 或项目 `.claude/skills/`、不属于
-> 任何 plugin 的「独立 skill」，快照里只记名字用于 `merge` 时看差异，**不会**被
+> 任何 plugin 的「独立 skill」，快照里只记名字用于 `diff` 时看差异，**不会**被
 > `apply` 安装或搬过去 —— 这类 skill 目前只能自己手动同步。
 
-之后想反向同步（机器 B 装的东西同步回机器 A）？在机器 B 上 `save` + `upload`
+之后想反向同步（dest 装的东西同步回 src）？在 dest 上 `save` + `upload`
 即可 —— 这时 `.gist_id` 已经缓存过，会直接把新快照加进同一个 gist，不会另建一个；
-回机器 A `fetch` 就能拿到。
+回 src `fetch` 就能拿到。
 
 ## 命令一览
 
@@ -132,11 +186,11 @@ marketplace 源（GitHub repo 或 git url）都记了，`apply -y` 会自动先
 | [`update`](#update) | 更新一个/多个/全部插件 |
 | [`doctor`](#doctor) | 列出本工具管不到的独立 MCP server |
 | [`uninstall` / `remove`](#uninstall--remove) | 卸载插件 |
-| [`save`](#save--merge--upload--fetch--apply) | 保存本机插件/技能的脱敏快照 |
-| [`merge`](#save--merge--upload--fetch--apply) | 合并多台机器的快照成差异视图 |
-| [`upload` / `fetch`](#save--merge--upload--fetch--apply) | 用 GitHub Gist 同步快照 |
+| [`save`](#save--diff--upload--fetch--apply) | 保存本机插件/技能的脱敏快照 |
+| [`diff`（别名 `merge`）](#save--diff--upload--fetch--apply) | 对比多台机器的快照，生成差异视图（只读） |
+| [`upload` / `fetch`](#save--diff--upload--fetch--apply) | 用 GitHub Gist 同步快照 |
 | [`gist-list`](#gist-list) | 列出本工具建过的 gist，找 id 不用开浏览器 |
-| [`apply`](#save--merge--upload--fetch--apply) | 把本机缺的插件按快照补装上 |
+| [`apply`](#save--diff--upload--fetch--apply) | 把本机缺的插件按快照补装上 |
 
 ### list
 
@@ -176,17 +230,21 @@ python plugin_manager.py update --all --parallel
 ```
 
 ```
-Updating 3 plugins...
+Updating 2 plugins...
 
-[1/3] caveman@caveman... ✔
-[2/3] ecc@ecc... ─
-[3/3] eduforge@eduforge... ✔
+[1/2] ecc@synced... skipped
+[2/2] leansvg@leansvg... done
 
 ────────────────────────────────────────
-Updated: 2  Already current: 1  Failed: 0
+Results (version before → after):
+  • ecc@synced  synced from your claude.ai account with no marketplace backing — manage it on claude.ai, or run `claude plugin disable` on this machine
+  ─ leansvg@leansvg  0.1.14 (unchanged)
+
+Updated: 0  Already current: 1  Skipped: 1  Failed: 0
 ```
 
-图标含义：`✔` 已更新 · `─` 已是最新 · `✗` 失败
+图标含义：`✔` 已更新 · `─` 已是最新 · `•` 跳过（比如从 claude.ai 账号同步、
+没有 marketplace 支撑的插件，这台机器管不了）· `✗` 失败
 
 状态靠比较更新前后的版本号判定，不靠猜 CLI 输出文字（只检测版本号变化，
 非任意内容变化）。
@@ -237,10 +295,11 @@ python plugin_manager.py uninstall caveman -y --prune
 python plugin_manager.py remove caveman -y
 ```
 
-### save / merge / upload / fetch / apply
+### save / diff / upload / fetch / apply
 
-保存已安装插件/技能的脱敏快照，把多台机器的快照合并成一份差异视图，
-（可选）把某台机器上缺的东西一键补装上。
+保存已安装插件/技能的脱敏快照，对比多台机器的快照生成差异视图（只读），
+（可选）把某台机器上缺的东西一键补装上。完整带真实输出的走查见
+[跨机同步完整流程](#跨机同步完整流程)；这里只列常用旗标速查。
 
 ```bash
 # 保存本机快照（identity/machine 是必填标签，不能填真实邮箱或主机名 —— 原因见 --help）
@@ -251,11 +310,16 @@ python plugin_manager.py save --identity mosjin --machine work-laptop
 # 或者直接用下面的 upload/fetch。
 python plugin_manager.py save --identity mosjin --machine work-laptop --dir /path/to/synced/dir
 
-# 把某目录下所有快照合并成一份「每台机器」差异视图
-python plugin_manager.py merge --dir /path/to/synced/dir
+# 对比某目录下所有快照，生成一份「每台机器」差异视图（只读，不装任何东西）。
+# `merge` 是同一个命令的别名，保留给用惯旧名字的人。
+python plugin_manager.py diff --dir /path/to/synced/dir
 
-# 同时把合并结果写到文件（供后面 apply 用）
-python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
+# 默认只显示有差异（drift / 缺失）的条目，完全一致的折叠成一行统计——
+# 插件多、skill 多时这个默认值能把几百行压成几行。想看全量加 --full。
+python plugin_manager.py diff --dir /path/to/synced/dir --full
+
+# 同时把差异视图写到文件（供后面 apply 用）
+python plugin_manager.py diff --dir /path/to/synced/dir --out merged.json
 
 # 用 GitHub Gist 做同步传输（复用 `gh` 的登录态）。
 # 首次上传会建一个 secret gist，并把 id 缓存在快照目录旁；
@@ -268,11 +332,13 @@ python plugin_manager.py upload snapshots/<file>.json
 python plugin_manager.py upload snapshots/<file>.json --keep-history   # 不删旧的，纯累加
 python plugin_manager.py fetch --gist-id <id>
 
-# 把合并视图里「本机缺的」装上。默认 dry-run 预览；
+# 把差异视图里「本机缺的」装上。默认 dry-run 预览；
 # 加 -y（须同时给 --scope）才真正安装。
-# 三种情况：① 本机已有对应 marketplace —— 直接装；
+# 四种情况：① 本机已有对应 marketplace —— 直接装；
 # ② 本机没有，但快照记了 GitHub repo / git url —— -y 时自动先加源再装；
-# ③ 两者都没有（比如源是本地路径）—— 只列出来跳过，不瞎猜。
+# ③ 两者都没有（比如源是本地路径）—— 只列出来跳过，不瞎猜；
+# ④ 这插件只在别的平台（比如 Windows）见过 —— 默认跳过并提示，
+#    加 --include-other-platforms 才会强制考虑。
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # 中文提示
 ```
@@ -319,7 +385,7 @@ python bootstrap_tools.py --check  # 只报状态，不装
 python -m pytest tests/ -v
 ```
 
-222 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
+243 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
 
 ## 跨平台
 
