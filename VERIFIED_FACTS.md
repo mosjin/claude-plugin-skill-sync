@@ -28,6 +28,27 @@
 - **Verified by**: me, reading CLI help directly.
 - **Invalidated by**: a `gh` CLI update changing gist defaults or the clone command's shape.
 
+### `gh gist list` supports only `-L/--limit`, `--public`, `--secret` — no server-side description/tag filter
+- **Fact**: a `--filter <description>` flag this codebase called for years was never real; the subcommand has no way to filter by description server-side.
+- **Verified on**: 2026-09-17
+- **Evidence**: live `gh gist list --public` / bare `gh gist list` runs both surfaced `unknown flag: --filter`, with `gh gist list --help`'s own usage block confirming the actual flag set.
+- **Verified by**: me, running the real CLI against the real account (reported live by a user hitting the crash).
+- **Invalidated by**: a `gh` CLI release adding server-side filtering to `gist list`.
+
+### No Claude Code plugin manifest or skill file declares an OS/platform restriction
+- **Fact**: zero `os`/`platform`/`engines`/`requires` field exists across every installed plugin's `plugin.json` or `SKILL.md` frontmatter on this machine.
+- **Verified on**: 2026-09-17
+- **Evidence**: scripted scan of 84 `plugin.json` files (42 unique plugins) and 1262 `SKILL.md` files under `~/.claude/plugins/cache` — collected every top-level/frontmatter key present; none matched.
+- **Verified by**: me, running the scan directly.
+- **Invalidated by**: a future Claude Code plugin manifest schema version adding a platform-declaration field — re-scan before assuming this is still true.
+
+### `apply`'s `merged_file` (the `diff --out` JSON) is a required positional CLI argument, not optional
+- **Fact**: `plugin_sync/cli.py`'s `apply_.add_argument("merged_file", ...)` has no `nargs="?"` or default — `apply` cannot run without a `diff --out` file path.
+- **Verified on**: 2026-09-17
+- **Evidence**: reading the argparse definition directly; confirms `diff --out <file>` is a hard prerequisite for `apply`, not a nice-to-have step (a claim this project's own README got wrong twice before this check).
+- **Verified by**: me, reading the CLI source.
+- **Invalidated by**: a future change adding a default/optional merged-file resolution path to `apply`.
+
 ### plugin_manager.py test suite is green at 222 tests as of the plugin_sync modularization (PR #12)
 - **Fact**: `python -m pytest tests/ -q` → 222 passed, 0 failed (170 at commit `4e3b19e`, +7 synced-scope skip fix, +10 gist-list/auto-discovery, +25 marketplace source capture/merge/apply auto-add, +9 upload overwrite/--keep-history, +1 LANG_MESSAGES en/zh key-parity test added during the modularization). Independently re-verified after merging PR #12 to `main`, plus a break-test on `claude_cli.run_claude` (temporarily raised, confirmed all 221 other tests still pass, reverted) to prove `unittest.mock.patch("plugin_sync.claude_cli.run_claude")` genuinely intercepts post-refactor.
 - **Verified on**: 2026-09-17

@@ -1,5 +1,28 @@
 # Tech Log
 
+## 2026-09-17: README rewrite exposed a self-updating plugin, a dead flag, and repeated wrong claims about what's optional
+
+### Problem
+A user support conversation about `plugin_manager.py`'s scope ("can it also cover skills/MCP?") led into fixing `update`'s status detection, then a real `gist-list --public`/`--secret` crash (`unknown flag: --filter`), then a full README rewrite — during which three separate wrong claims were made and had to be corrected live by the user, each traceable to a specific reasoning shortcut.
+
+### Root Cause
+1. `update_one` classified success/failure by regexing `claude plugin update`'s stdout text (`"already"`/`"up to date"`) instead of comparing the plugin's version string before and after — a `0` exit code with unchanged wording could misreport as "updated".
+2. `list_snapshot_gists()` called `gh gist list --filter <description>` — `--filter` was never a real flag on that subcommand (verified live against `gh gist list --help`: only `-L`/`--public`/`--secret` exist). The mocked test asserted the same wrong flag the implementation sent, so it "passed" without ever exercising the real CLI — nothing caught this until a user ran it for real.
+3. Writing the cross-machine walkthrough, "`diff` can be skipped" was asserted twice in slightly different forms — first as "this step is optional", then (after a partial correction) left uncorrected in a second location (the Quick Reference table) while the walkthrough prose was fixed. Both times, the actual constraint (`apply`'s first CLI argument is a `diff --out` file — the command cannot be skipped, only *reading its printed output* can be) was sitting right there in the example's own `--out merged.json` flag, unnoticed until the user pointed at it directly in a screenshot.
+
+### Fix
+- `update_one` now returns raw `{id, code, message}`; `resolve_update_status(before, after, code)` is a pure function comparing real version strings, tested directly with before/after fixtures instead of stdout-wording fixtures.
+- `list_snapshot_gists(visibility=None)` sends only real `gh gist list` flags (`-L`, plus `--public`/`--secret` when requested) and filters by `SNAPSHOT_GIST_DESCRIPTION` **client-side** on the parsed output — fixing a second, quieter bug the dead `--filter` was masking: with no client-side filter, an account with unrelated gists would have had them misidentified as this tool's own snapshots.
+- Every "optional" claim in the README was traced to its actual CLI/argparse constraint before being asserted, and every place the same claim appears (Quick Reference table, walkthrough step heading, prose) was greped for and updated together — not just the first place noticed.
+
+### Lessons
+- **Rule**: a mocked test that asserts the implementation sent flag X is not evidence flag X is real — it only proves the test and the implementation agree with each other. Verify a wrapped CLI's actual flags against its own `--help` (or docs) independent of what the code currently sends, especially for any flag introduced without ever running the real subprocess.
+- **Why**: this is exactly how `--filter` shipped and stayed broken through however many commits — nothing ever ran `gh gist list` for real until a live user did.
+- **Rule**: before writing "X is optional" or "X can be skipped" in user-facing docs, find the specific code that would make it false if it weren't — a required CLI argument, a non-nullable field, a hard-coded check — and cite it. If no such thing is found, the claim is unverified, not optional.
+- **Why**: "optional" is a strong claim about a hard constraint (does the program accept the input's absence), not a style preference — asserting it without checking is indistinguishable, to a reader, from asserting it after checking, until the reader hits the wall the writer didn't.
+- **Rule**: correcting a wrong claim only where the user pointed means the same claim can still be wrong two paragraphs or one table away. Grep for every occurrence of the corrected concept in the document, not just the flagged instance.
+- **Why**: happened twice in one session on the same underlying claim (`diff` optionality) — the second occurrence survived the first fix specifically because the fix was scoped to "the sentence the user quoted" instead of "every sentence making this claim".
+
 ## 2026-09-17: modularize plugin_manager.py into plugin_sync/ (PR #12)
 
 ### Problem
