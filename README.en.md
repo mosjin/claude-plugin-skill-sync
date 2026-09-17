@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -20,6 +20,7 @@
 - [About](#about)
 - [Highlights](#highlights)
 - [Quick Start](#quick-start-beginner-friendly)
+- [Full Cross-Machine Sync Walkthrough](#full-cross-machine-sync-walkthrough)
 - [Commands](#commands)
 - [Requirements](#requirements)
 - [bootstrap_tools.py](#bootstrap_toolspy)
@@ -52,7 +53,7 @@ surfaced (not managed) via [`doctor`](#commands).
 | **Desensitized snapshots** | `identity`/`machine` are required labels, **never a raw email or hostname** |
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
 | **Never guesses installs** | Plugins whose marketplace isn't on the target machine are listed and skipped, **not force-installed** |
-| **177 tests** | All mocked — real plugins are never touched during testing |
+| **187 tests** | All mocked — real plugins are never touched during testing |
 
 ## Quick Start (beginner-friendly)
 
@@ -69,30 +70,54 @@ python plugin_manager.py list
 python plugin_manager.py update --all
 ```
 
-Only using one machine? That's it — skip the "cross-machine sync" part below.
+Only using one machine? That's it. Want to sync plugins across machines? See the full walkthrough below.
 
-<details>
-<summary><strong>Want to sync plugins across machines? Three steps</strong></summary>
+## Full Cross-Machine Sync Walkthrough
+
+Typical scenario: machine A has a pile of plugins installed, and you want
+machine B to end up with the same set. Only the first `fetch` might need an
+extra id typed in — every other step is copy-paste.
 
 ```bash
-# Machine A: save a snapshot
-python plugin_manager.py save --identity your-name --machine machineA
+# ① Machine A — save a snapshot of this machine
+python plugin_manager.py save --identity mosjin --machine work-laptop
 
-# Machine B: save one too (same identity, different machine label)
-python plugin_manager.py save --identity your-name --machine machineB
+# ② Machine A — upload it to a GitHub Gist
+#    First upload auto-creates a secret gist, caches its id in snapshots/.gist_id
+python plugin_manager.py upload snapshots/<file>.json
+```
 
-# Put both snapshot files in one shared dir, then merge + preview + install
-python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
+```bash
+# ③ Machine B — save its own snapshot too (optional, so the drift view
+#    below also shows what machine B already has)
+python plugin_manager.py save --identity mosjin --machine home-pc
+
+# ④ Machine B — fetch machine A's snapshot
+#    This machine has never fetched/uploaded before, so there's no cached
+#    id — but as long as this GitHub account has exactly one gist this
+#    tool created, fetch finds and caches it automatically. No id typing:
+python plugin_manager.py fetch
+
+# More than one such gist on this account (synced more than one set before)?
+# Check first, then be explicit:
+python plugin_manager.py gist-list
+python plugin_manager.py fetch --gist-id <id>
+
+# ⑤ Machine B — merge both snapshots into a drift view
+python plugin_manager.py merge --dir snapshots --out merged.json
+
+# ⑥ Machine B — preview what would install, then actually install with -y
 python plugin_manager.py apply merged.json --all --scope user
-```
-
-Preview looks right? Add `-y` to actually install:
-
-```bash
 python plugin_manager.py apply merged.json --all -y --scope user
+
+# ⑦ Machine B — bring everything (including what was just installed) up to date
+python plugin_manager.py update --all
 ```
 
-</details>
+Want to sync the other direction later (push what machine B has back to
+machine A)? `save` + `upload` on machine B — `.gist_id` is already cached
+there, so it adds the new snapshot to the same gist instead of creating a
+second one — then `fetch` on machine A.
 
 ## Commands
 
@@ -105,6 +130,7 @@ python plugin_manager.py apply merged.json --all -y --scope user
 | [`save`](#save--merge--upload--fetch--apply) | Save a desensitized snapshot of this machine |
 | [`merge`](#save--merge--upload--fetch--apply) | Merge snapshots from multiple machines into a drift view |
 | [`upload` / `fetch`](#save--merge--upload--fetch--apply) | Sync snapshots via GitHub Gist |
+| [`gist-list`](#gist-list) | List gists this tool created — find an id without opening a browser |
 | [`apply`](#save--merge--upload--fetch--apply) | Install whatever's missing on this machine per a snapshot |
 
 ### list
@@ -233,6 +259,8 @@ python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
 # Sync via a GitHub Gist instead of your own transport (reuses `gh` auth).
 # First upload creates a secret gist and caches its id next to the
 # snapshot dir; later uploads/fetches in that dir reuse it automatically.
+# No cache, no --gist-id: exactly one gist this tool created on the account
+# is used automatically; more than one is an error pointing at gist-list.
 python plugin_manager.py upload snapshots/<file>.json
 python plugin_manager.py fetch --gist-id <id>
 
@@ -242,6 +270,24 @@ python plugin_manager.py fetch --gist-id <id>
 # others are listed and skipped, never guessed at.
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # Chinese prompts
+```
+
+### gist-list
+
+List the gists this tool created (filtered by the tag `upload` stamps on
+them) — no need to open a browser to find an id.
+
+```bash
+python plugin_manager.py gist-list
+```
+
+```
+Gist ID                           Visibility  Files      Updated
+──────────────────────────────────────────────────────────────────
+1cd6200ecc8a99f2cf03d59954bda507  secret      1 file     2026-09-17T00:34:47Z
+
+1 gist found.
+Use one with: fetch --gist-id <id>  (or upload --gist-id <id>)
 ```
 
 ## Requirements
@@ -270,7 +316,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-177 tests, all subprocess calls mocked — no real plugins are modified during testing.
+187 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 

@@ -28,12 +28,19 @@
 - **Verified by**: me, reading CLI help directly.
 - **Invalidated by**: a `gh` CLI update changing gist defaults or the clone command's shape.
 
-### plugin_manager.py test suite is green at 177 tests as of the synced-scope fix
-- **Fact**: `python -m pytest tests/ -q` → 177 passed, 0 failed (170 at commit `4e3b19e`, +7 from the synced-scope skip fix below).
+### plugin_manager.py test suite is green at 187 tests as of the gist-list / auto-discovery feature
+- **Fact**: `python -m pytest tests/ -q` → 187 passed, 0 failed (170 at commit `4e3b19e`, +7 from the synced-scope skip fix, +10 from `gist-list`/`resolve_gist_id` auto-discovery).
 - **Verified on**: 2026-09-17
 - **Evidence**: local pytest run output in this session.
 - **Verified by**: me, running the suite directly.
 - **Invalidated by**: any further commit to `plugin_manager.py`/`tests/test_plugin_manager.py` — re-run before trusting this count again.
+
+### `gh gist list` has no `--json` flag — output is fixed-column TSV, one gist per line
+- **Fact**: columns are `id\tdescription\tfile-count\tvisibility\tupdated-timestamp` (e.g. `1cd6200ecc8a99f2cf03d59954bda507\tclaude-plugin-skill-sync snapshots\t1 file\tsecret\t2026-09-17T00:34:47Z`). `--filter <regex>` matches against description/filenames (and content with `--include-content`), so tagging every gist this tool creates with a fixed description (`upload`'s `-d` flag) makes `--filter <that description>` a reliable way to find only this tool's gists.
+- **Verified on**: 2026-09-17
+- **Evidence**: `gh gist list --help` (no `--json` in FLAGS); live `gh gist list --filter claude-plugin-skill-sync -L 30` output on this machine, gh 2.89.0.
+- **Verified by**: me, running both directly.
+- **Invalidated by**: a future `gh` release adding `--json` support or changing the TSV column order — re-check `gh gist list --help` before trusting `parse_gist_list`'s column indices again.
 
 ### `claude plugin update/uninstall -s` rejects `scope: "synced"` outright, with a generic "Invalid scope" error instead of its own explanation
 - **Fact**: plugins with `scope: "synced"` (pulled from a claude.ai account, no local marketplace backing) exist in `claude plugin list --json` output but are not among the `-s` flag's accepted values (`user`, `project`, `local`, `managed`). Passing `-s synced` fails with `Invalid scope "synced"...`; the CLI's real, more useful message — obtained by omitting `-s` (which defaults to `user`) or passing any accepted value — is: `This plugin is synced from your claude.ai account with no marketplace backing — it cannot be updated here. Manage it on claude.ai, or \`claude plugin disable\` to turn it off on this machine.`

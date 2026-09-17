@@ -1275,10 +1275,40 @@ class TestResolveGistId(unittest.TestCase):
 
     def test_missing_everywhere_returns_none(self):
         """Unlike identity/machine, no gist id is a VALID state for upload
-        (it means: create a new gist) — must not exit."""
+        (it means: create a new gist) — must not exit. Zero auto-discovery
+        matches falls all the way through to None, same as before."""
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict("os.environ", {}, clear=True):
-                self.assertIsNone(plugin_manager.resolve_gist_id(self._args(None), Path(tmp)))
+                with patch("plugin_manager.list_snapshot_gists", return_value=[]):
+                    self.assertIsNone(plugin_manager.resolve_gist_id(self._args(None), Path(tmp)))
+
+    def test_auto_discovers_single_match(self):
+        """The core UX fix: a second machine with no cached id, no env var,
+        and no --gist-id flag should still find the one gist this tool
+        created, with zero typing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gists = [{"id": "only-one", "description": plugin_manager.SNAPSHOT_GIST_DESCRIPTION, "files": "1 file", "visibility": "secret", "updated_at": "2026-09-17T00:00:00Z"}]
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("plugin_manager.list_snapshot_gists", return_value=gists):
+                    with patch("sys.stdout", new_callable=StringIO):
+                        result = plugin_manager.resolve_gist_id(self._args(None), Path(tmp))
+            self.assertEqual(result, "only-one")
+            self.assertEqual((Path(tmp) / ".gist_id").read_text(encoding="utf-8"), "only-one")
+
+    def test_auto_discovery_ambiguous_multiple_matches_exits(self):
+        """Two or more candidates must error instead of guessing — silently
+        picking one (or letting `upload` create a third gist) would
+        fragment the "one shared gist" model this tool assumes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gists = [
+                {"id": "first", "description": plugin_manager.SNAPSHOT_GIST_DESCRIPTION, "files": "1 file", "visibility": "secret", "updated_at": "t"},
+                {"id": "second", "description": plugin_manager.SNAPSHOT_GIST_DESCRIPTION, "files": "1 file", "visibility": "secret", "updated_at": "t"},
+            ]
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("plugin_manager.list_snapshot_gists", return_value=gists):
+                    with self.assertRaises(SystemExit) as ctx:
+                        plugin_manager.resolve_gist_id(self._args(None), Path(tmp))
+        self.assertIn("gist-list", str(ctx.exception))
 
 
 class TestExtractGistId(unittest.TestCase):
@@ -1291,6 +1321,66 @@ class TestExtractGistId(unittest.TestCase):
         output instead of failing where the mistake is easy to notice."""
         with self.assertRaises(SystemExit):
             plugin_manager._extract_gist_id("no url in here at all")
+
+
+SAMPLE_GIST_LIST_OUTPUT = (
+    "1cd6200ecc8a99f2cf03d59954bda507\tclaude-plugin-skill-sync snapshots\t1 file\tsecret\t2026-09-17T00:34:47Z\n"
+    "cf3ea934043827ca541e97d238cb1804\tsome other gist\t2 files\tpublic\t2026-04-27T15:13:31Z\n"
+)
+
+
+class TestParseGistList(unittest.TestCase):
+    def test_parses_tsv_rows(self):
+        result = plugin_manager.parse_gist_list(SAMPLE_GIST_LIST_OUTPUT)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], {
+            "id": "1cd6200ecc8a99f2cf03d59954bda507",
+            "description": "claude-plugin-skill-sync snapshots",
+            "files": "1 file",
+            "visibility": "secret",
+            "updated_at": "2026-09-17T00:34:47Z",
+        })
+
+    def test_empty_output_returns_empty_list(self):
+        self.assertEqual(plugin_manager.parse_gist_list(""), [])
+
+    def test_malformed_line_skipped_not_crash(self):
+        result = plugin_manager.parse_gist_list("not-enough-columns\there\n")
+        self.assertEqual(result, [])
+
+
+class TestListSnapshotGists(unittest.TestCase):
+    def test_filters_by_description_via_gh_flag(self):
+        with patch("plugin_manager.run_gh", return_value=(0, SAMPLE_GIST_LIST_OUTPUT, "")) as mock:
+            plugin_manager.list_snapshot_gists()
+        args = mock.call_args[0][0]
+        self.assertIn("--filter", args)
+        self.assertEqual(args[args.index("--filter") + 1], plugin_manager.SNAPSHOT_GIST_DESCRIPTION)
+
+    def test_cli_failure_exits(self):
+        with patch("plugin_manager.run_gh", return_value=(1, "", "auth error")):
+            with self.assertRaises(SystemExit) as ctx:
+                plugin_manager.list_snapshot_gists()
+        self.assertIn("auth error", str(ctx.exception))
+
+
+class TestCmdGistList(unittest.TestCase):
+    def test_no_gists_found_prints_hint(self):
+        with patch("plugin_manager.list_snapshot_gists", return_value=[]):
+            with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                plugin_manager.cmd_gist_list(None)
+                output = mock_out.getvalue()
+        self.assertIn("No gists tagged", output)
+
+    def test_lists_gist_ids_and_usage_hint(self):
+        gists = [{"id": "abc123", "description": plugin_manager.SNAPSHOT_GIST_DESCRIPTION, "files": "1 file", "visibility": "secret", "updated_at": "2026-09-17T00:00:00Z"}]
+        with patch("plugin_manager.list_snapshot_gists", return_value=gists):
+            with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                plugin_manager.cmd_gist_list(None)
+                output = mock_out.getvalue()
+        self.assertIn("abc123", output)
+        self.assertIn("1 gist found", output)
+        self.assertIn("fetch --gist-id", output)
 
 
 class TestCmdUpload(unittest.TestCase):
@@ -1331,13 +1421,14 @@ class TestCmdUpload(unittest.TestCase):
     def test_creates_new_gist_exact_argv_and_caches_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             snap = self._write_snapshot(tmp)
-            with patch(
-                "plugin_manager.run_gh",
-                return_value=(0, "https://gist.github.com/mosjin/aabbcc1122\n", ""),
-            ) as mock:
-                with patch("sys.stdout", new_callable=StringIO) as mock_out:
-                    plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
-                    output = mock_out.getvalue()
+            with patch("plugin_manager.list_snapshot_gists", return_value=[]):
+                with patch(
+                    "plugin_manager.run_gh",
+                    return_value=(0, "https://gist.github.com/mosjin/aabbcc1122\n", ""),
+                ) as mock:
+                    with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                        plugin_manager.cmd_upload(self._args(str(snap), dir_=tmp))
+                        output = mock_out.getvalue()
             mock.assert_called_once_with(["gist", "create", str(snap), "-d", "claude-plugin-skill-sync snapshots"])
             self.assertNotIn("--public", mock.call_args[0][0])
             self.assertIn("aabbcc1122", output)
@@ -1373,8 +1464,10 @@ class TestCmdFetch(unittest.TestCase):
     def test_missing_gist_id_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict("os.environ", {}, clear=True):
-                with self.assertRaises(SystemExit):
-                    plugin_manager.cmd_fetch(self._args(dir_=str(Path(tmp) / "snaps")))
+                with patch("plugin_manager.list_snapshot_gists", return_value=[]):
+                    with self.assertRaises(SystemExit) as ctx:
+                        plugin_manager.cmd_fetch(self._args(dir_=str(Path(tmp) / "snaps")))
+        self.assertIn("gist id required", str(ctx.exception))
 
     def test_clone_failure_exits_with_real_message(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1382,6 +1475,31 @@ class TestCmdFetch(unittest.TestCase):
                 with self.assertRaises(SystemExit) as ctx:
                     plugin_manager.cmd_fetch(self._args(gist_id="abc", dir_=str(Path(tmp) / "snaps")))
         self.assertIn("gist not found", str(ctx.exception))
+
+    def test_fetch_with_no_gist_id_auto_discovers_single_match(self):
+        """The second-machine happy path this feature exists for: no
+        --gist-id, no env var, no cached marker — but exactly one gist
+        tagged by this tool exists, so fetch must still work."""
+        gists = [{"id": "auto-found", "description": plugin_manager.SNAPSHOT_GIST_DESCRIPTION, "files": "1 file", "visibility": "secret", "updated_at": "t"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "snaps"
+
+            def fake_run_gh(args):
+                if args[:2] == ["gist", "clone"]:
+                    self.assertEqual(args[2], "auto-found")
+                    clone_dir = Path(args[3])
+                    clone_dir.mkdir(parents=True, exist_ok=True)
+                    return (0, "", "")
+                raise AssertionError(f"unexpected run_gh call: {args}")
+
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("plugin_manager.list_snapshot_gists", return_value=gists):
+                    with patch("plugin_manager.run_gh", side_effect=fake_run_gh):
+                        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+                            plugin_manager.cmd_fetch(self._args(dir_=str(out_dir)))
+                            output = mock_out.getvalue()
+        self.assertIn("Auto-detected gist auto-found", output)
+        self.assertIn("Fetched gist auto-found", output)
 
     def _fake_clone_with(self, files: dict):
         def fake_clone(args):

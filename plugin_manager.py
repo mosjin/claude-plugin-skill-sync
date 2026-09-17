@@ -9,6 +9,7 @@ Usage:
     python plugin_manager.py save --identity mosjin --machine work-laptop
     python plugin_manager.py merge
     python plugin_manager.py upload snapshots/<file>.json
+    python plugin_manager.py gist-list
     python plugin_manager.py fetch --gist-id <id>
     python plugin_manager.py apply merged.json --all -y --scope user
 """
@@ -406,6 +407,12 @@ ENV_MACHINE = "PLUGIN_MANAGER_MACHINE"
 ENV_SNAPSHOT_DIR = "PLUGIN_MANAGER_SNAPSHOT_DIR"
 ENV_GIST_ID = "PLUGIN_MANAGER_GIST_ID"
 
+# Tag `upload` stamps on any gist it creates, and the only thing `gist-list`/
+# auto-discovery filter on. Single definition — both call sites below (the
+# `-d` at create time, the `--filter` at list time) reference this instead
+# of each hardcoding the string.
+SNAPSHOT_GIST_DESCRIPTION = "claude-plugin-skill-sync snapshots"
+
 
 def _sanitize_label(label: str) -> str:
     """Filesystem-safe slug: lowercase, non-alnum runs collapsed to '-'."""
@@ -769,11 +776,70 @@ def _gist_id_marker_path(snapshot_dir: Path) -> Path:
     return snapshot_dir / ".gist_id"
 
 
+def parse_gist_list(output: str) -> list:
+    """Parse `gh gist list` TSV output into records.
+
+    Line shape is "<id>\\t<description>\\t<file count>\\t<visibility>\\t<updated>".
+    No `--json` support on this gh subcommand (verified against `gh gist list
+    --help`), so this is a plain split, not a json.loads.
+    """
+    records = []
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 5:
+            continue
+        gist_id, description, files, visibility, updated = parts
+        records.append({
+            "id": gist_id.strip(),
+            "description": description.strip(),
+            "files": files.strip(),
+            "visibility": visibility.strip(),
+            "updated_at": updated.strip(),
+        })
+    return records
+
+
+def list_snapshot_gists() -> list:
+    """This tool's own gists — anything tagged SNAPSHOT_GIST_DESCRIPTION on
+    the authenticated GitHub account. Backs both `gist-list` and
+    resolve_gist_id's auto-discovery.
+    """
+    code, out, err = run_gh(["gist", "list", "--filter", SNAPSHOT_GIST_DESCRIPTION, "-L", "100"])
+    if code != 0:
+        sys.exit(f"Error listing gists: {_clean_gh_error(out, err, code)}")
+    return parse_gist_list(out)
+
+
+def cmd_gist_list(_args) -> None:
+    gists = list_snapshot_gists()
+    if not gists:
+        print(f"No gists tagged '{SNAPSHOT_GIST_DESCRIPTION}' found on this GitHub account.")
+        print("Run `upload` on a machine that has a snapshot to create one.")
+        return
+
+    id_w = max(len(g["id"]) for g in gists) + 2
+    vis_w = max(len(g["visibility"]) for g in gists) + 2
+    header = f"{'Gist ID':<{id_w}} {'Visibility':<{vis_w}} {'Files':<10} Updated"
+    print(header)
+    print("─" * len(header))
+    for g in gists:
+        print(f"{g['id']:<{id_w}} {g['visibility']:<{vis_w}} {g['files']:<10} {g['updated_at']}")
+    print(f"\n{len(gists)} gist{'s' if len(gists) != 1 else ''} found.")
+    print("Use one with: fetch --gist-id <id>  (or upload --gist-id <id>)")
+
+
 def resolve_gist_id(args, snapshot_dir: Optional[Path] = None) -> Optional[str]:
-    """No sys.exit here — unlike identity/machine, a missing gist id is
-    valid for `upload` (it means "create a new one"). `fetch` requires one
-    and checks for it itself. Precedence: --gist-id flag, then the env
-    var, then this snapshot dir's own cached marker file.
+    """No sys.exit here for the zero-match case — unlike identity/machine, a
+    missing gist id is valid for `upload` (it means "create a new one").
+    `fetch` requires one and checks for it itself.
+
+    Precedence: --gist-id flag, then the env var, then this snapshot dir's
+    own cached marker file, then auto-discovery — exactly one gist tagged
+    SNAPSHOT_GIST_DESCRIPTION on this account means there's no ambiguity to
+    ask the user about, so use it and cache it (this is what lets a second
+    machine `fetch`/`upload` without ever typing an id by hand). Two or
+    more candidates IS ambiguous — sys.exit here rather than let `upload`
+    silently create a third, disconnected gist.
     """
     if args.gist_id:
         return args.gist_id
@@ -783,7 +849,25 @@ def resolve_gist_id(args, snapshot_dir: Optional[Path] = None) -> Optional[str]:
     if snapshot_dir is not None:
         marker = _gist_id_marker_path(snapshot_dir)
         if marker.is_file():
-            return marker.read_text(encoding="utf-8").strip() or None
+            cached = marker.read_text(encoding="utf-8").strip()
+            if cached:
+                return cached
+
+    matches = list_snapshot_gists()
+    if len(matches) > 1:
+        ids = ", ".join(m["id"] for m in matches)
+        sys.exit(
+            f"Error: {len(matches)} gists tagged '{SNAPSHOT_GIST_DESCRIPTION}' "
+            f"found ({ids}) — ambiguous. Run `gist-list`, then pass --gist-id "
+            f"<id> explicitly."
+        )
+    if len(matches) == 1:
+        gist_id = matches[0]["id"]
+        print(f"Auto-detected gist {gist_id} (only one tagged '{SNAPSHOT_GIST_DESCRIPTION}')")
+        if snapshot_dir is not None:
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            _gist_id_marker_path(snapshot_dir).write_text(gist_id, encoding="utf-8")
+        return gist_id
     return None
 
 
@@ -844,7 +928,7 @@ def cmd_upload(args) -> None:
             sys.exit(f"Error uploading to gist {gist_id}: {_clean_gh_error(out, err, code)}")
         print(f"Uploaded {file_path.name} to gist {gist_id}")
     else:
-        code, out, err = run_gh(["gist", "create", str(file_path), "-d", "claude-plugin-skill-sync snapshots"])
+        code, out, err = run_gh(["gist", "create", str(file_path), "-d", SNAPSHOT_GIST_DESCRIPTION])
         if code != 0:
             sys.exit(f"Error creating gist: {_clean_gh_error(out, err, code)}")
         new_id = _extract_gist_id(out + err)
@@ -1112,6 +1196,11 @@ def main() -> None:
         help=f"Local snapshot dir to copy into (default: ${ENV_SNAPSHOT_DIR} or ./{DEFAULT_SNAPSHOT_DIR})",
     )
 
+    sub.add_parser(
+        "gist-list",
+        help=f"List this tool's own gists (tagged '{SNAPSHOT_GIST_DESCRIPTION}') — find a --gist-id without leaving the terminal",
+    )
+
     apply_ = sub.add_parser("apply", help="Install plugins missing on this machine from a merged snapshot")
     apply_.add_argument("merged_file", help="Path to a `merge --out` JSON file")
     apply_.add_argument("plugins", nargs="*", metavar="plugin", help="Specific plugin id(s) to install")
@@ -1137,6 +1226,8 @@ def main() -> None:
         cmd_upload(args)
     elif args.command == "fetch":
         cmd_fetch(args)
+    elif args.command == "gist-list":
+        cmd_gist_list(args)
     elif args.command == "apply":
         cmd_apply(args)
 

@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#环境要求)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#环境要求)
-[![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)](#测试)
+[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#测试)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#跨平台)
 
 [English](README.en.md)
@@ -20,6 +20,7 @@
 - [关于本项目](#关于本项目)
 - [核心亮点](#核心亮点)
 - [快速上手](#快速上手新手向)
+- [跨机同步完整流程](#跨机同步完整流程)
 - [命令一览](#命令一览)
 - [环境要求](#环境要求)
 - [bootstrap_tools.py](#bootstrap_toolspy)
@@ -48,7 +49,7 @@
 | **脱敏快照** | `identity`/`machine` 必须是标签，**不能填真实邮箱或主机名** |
 | **`apply` 默认 dry-run** | 不加 `-y` 只预览，不动真格；加了 `-y` 还必须给 `--scope` |
 | **只装认识的** | 目标机器没加对应 marketplace 的插件，只列出跳过，**绝不瞎猜安装** |
-| **177 项测试** | 全 mock，测试不碰真实插件 |
+| **187 项测试** | 全 mock，测试不碰真实插件 |
 
 ## 快速上手（新手向）
 
@@ -65,30 +66,49 @@ python plugin_manager.py list
 python plugin_manager.py update --all
 ```
 
-只用单台机器？到这两步就够了，「跨机同步」部分可以先跳过。
+只用单台机器？到这两步就够了。想在多台机器间同步插件，看下一节的完整流程。
 
-<details>
-<summary><strong>想在多台机器间同步插件？点开看最简三步</strong></summary>
+## 跨机同步完整流程
+
+典型场景：机器 A 装了一堆插件，想让机器 B 也装成一样的。全程只有第一次 `fetch`
+可能要多敲一个 id，其余步骤照抄命令即可。
 
 ```bash
-# 机器 A：存一份本机快照
-python plugin_manager.py save --identity 你的名字 --machine 机器A标签
+# ① 机器 A —— 保存本机快照
+python plugin_manager.py save --identity mosjin --machine work-laptop
 
-# 机器 B：也存一份（identity 用同一个，machine 换成机器 B 的标签）
-python plugin_manager.py save --identity 你的名字 --machine 机器B标签
+# ② 机器 A —— 上传到 GitHub Gist
+#    首次上传自动建一个 secret gist，id 缓存进 snapshots/.gist_id
+python plugin_manager.py upload snapshots/<file>.json
+```
 
-# 把两份快照放进同一个目录后，合并 + 预览 + 补装（先不加 -y 看看会装什么）
-python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
+```bash
+# ③ 机器 B —— 保存本机快照（可选，让下面的差异视图里也能看到机器 B 装了什么）
+python plugin_manager.py save --identity mosjin --machine home-pc
+
+# ④ 机器 B —— 拉取机器 A 的快照
+#    这台机器从没 fetch/upload 过，没有缓存的 id —— 但只要这个 GitHub
+#    账号下只有一个这个工具建的 gist，fetch 会自动找到并缓存，不用手敲 id：
+python plugin_manager.py fetch
+
+# 账号下有不止一个这类 gist（同步过好几套）？先看一眼再指定：
+python plugin_manager.py gist-list
+python plugin_manager.py fetch --gist-id <id>
+
+# ⑤ 机器 B —— 合并两份快照，生成差异视图
+python plugin_manager.py merge --dir snapshots --out merged.json
+
+# ⑥ 机器 B —— 先预览会装什么，确认没问题再加 -y 真正安装
 python plugin_manager.py apply merged.json --all --scope user
-```
-
-确认预览没问题，再加 `-y` 真正安装：
-
-```bash
 python plugin_manager.py apply merged.json --all -y --scope user
+
+# ⑦ 机器 B —— 把所有插件（含刚补装的）都更新到最新版本
+python plugin_manager.py update --all
 ```
 
-</details>
+之后想反向同步（机器 B 装的东西同步回机器 A）？在机器 B 上 `save` + `upload`
+即可 —— 这时 `.gist_id` 已经缓存过，会直接把新快照加进同一个 gist，不会另建一个；
+回机器 A `fetch` 就能拿到。
 
 ## 命令一览
 
@@ -101,6 +121,7 @@ python plugin_manager.py apply merged.json --all -y --scope user
 | [`save`](#save--merge--upload--fetch--apply) | 保存本机插件/技能的脱敏快照 |
 | [`merge`](#save--merge--upload--fetch--apply) | 合并多台机器的快照成差异视图 |
 | [`upload` / `fetch`](#save--merge--upload--fetch--apply) | 用 GitHub Gist 同步快照 |
+| [`gist-list`](#gist-list) | 列出本工具建过的 gist，找 id 不用开浏览器 |
 | [`apply`](#save--merge--upload--fetch--apply) | 把本机缺的插件按快照补装上 |
 
 ### list
@@ -225,6 +246,8 @@ python plugin_manager.py merge --dir /path/to/synced/dir --out merged.json
 # 用 GitHub Gist 做同步传输（复用 `gh` 的登录态）。
 # 首次上传会建一个 secret gist，并把 id 缓存在快照目录旁；
 # 同目录下后续 upload/fetch 会自动复用这个 id。
+# 没缓存、没传 --gist-id 时：账号下只有一个本工具建的 gist 就自动用它；
+# 有不止一个就报错，提示先用 gist-list 看一眼再指定 --gist-id。
 python plugin_manager.py upload snapshots/<file>.json
 python plugin_manager.py fetch --gist-id <id>
 
@@ -234,6 +257,23 @@ python plugin_manager.py fetch --gist-id <id>
 # 其余的只列出来跳过，不瞎猜。
 python plugin_manager.py apply merged.json --all -y --scope user
 python plugin_manager.py apply merged.json --lang zh   # 中文提示
+```
+
+### gist-list
+
+列出这个工具建过的 gist（按 upload 打的标签过滤），不用开浏览器找 id。
+
+```bash
+python plugin_manager.py gist-list
+```
+
+```
+Gist ID                           Visibility  Files      Updated
+──────────────────────────────────────────────────────────────────
+1cd6200ecc8a99f2cf03d59954bda507  secret      1 file     2026-09-17T00:34:47Z
+
+1 gist found.
+Use one with: fetch --gist-id <id>  (or upload --gist-id <id>)
 ```
 
 ## 环境要求
@@ -261,7 +301,7 @@ python bootstrap_tools.py --check  # 只报状态，不装
 python -m pytest tests/ -v
 ```
 
-177 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
+187 项测试，所有 subprocess 调用均已 mock —— 测试过程不会动到真实插件。
 
 ## 跨平台
 
