@@ -1,5 +1,27 @@
 # Tech Log
 
+## 2026-09-17: modularize plugin_manager.py into plugin_sync/ (PR #12)
+
+### Problem
+`plugin_manager.py` had grown past 1300 lines as a single flat file across four feature cycles in one day — user's standing design principles (CLAUDE.md rule 8: modularity, single-definition, high cohesion/low coupling, maintainability) called for splitting it before it grew further.
+
+### Root Cause
+Not a bug — a proactive refactor. The risk was entirely self-inflicted: 221 existing tests patch dozens of names by the string `"plugin_manager.<name>"`, and `unittest.mock.patch()` only intercepts a call site that looks up the patched name *on the module object at call time* — a `from .module import name` import binds a private copy into the importing module's namespace that `patch("plugin_sync.module.name")` cannot touch, silently producing tests that pass while mocking nothing (catastrophic here, since `run_claude`/`run_gh` mocks are the only thing stopping tests from hitting real plugins/gists).
+
+### Fix
+- Split into `plugin_sync/{claude_cli,snapshots,marketplaces,merge,gist,apply,cli}.py` by domain, using `ast` to extract each function/constant's exact source rather than retyping.
+- Every cross-module call is qualified through an imported module object (`from . import claude_cli` then `claude_cli.run_claude(...)`), never a bare `from .x import y` — this is what keeps every existing `patch(...)` target valid after the move.
+- `plugin_manager.py` reduced to a 20-line shim (`from plugin_sync.cli import main`) — `python plugin_manager.py <command>` is byte-for-byte unchanged, so zero README lines needed to change.
+- Found and fixed two real bugs introduced *during* the move (not present before): `merge.py` and `snapshots.py` each had a local variable shadowing an imported module name (`snapshots`, `marketplaces`) — caught immediately by the test suite (`UnboundLocalError`), fixed by renaming the import aliases.
+- Verified with more than a green test suite: deliberately broke `run_claude`/`run_gh` (`raise RuntimeError`) and confirmed every test that's supposed to mock them still passed, then reverted — proof the patch targets actually intercept, not just that nothing crashed. Also ran a live `--help` sweep across all 11 subcommands plus real `list`/`gist-list` calls, since 100%-mocked unit tests can't catch a broken argparse wire-up or missing import.
+- Did not force a class onto the `cmd_*` handlers — the per-handler `lang`/`scope`/`snapshot_dir`/`gist_id` resolution duplication was only 1-2 lines each, not enough to justify a config-object abstraction over otherwise-independent pure functions (`merge_snapshots`, `whitelist_plugin`, `classify_missing_plugins`, etc. stayed plain functions).
+
+### Lessons
+- **Rule**: when moving code between modules in a codebase with heavy `unittest.mock.patch("module.name")` usage, always import the *module* and call through it (`module.name(...)`), never `from module import name` — the latter breaks every patch target for that name silently (tests keep passing, they just stop testing anything).
+- **Why**: this is exactly the Style-A-vs-Style-B distinction that determined whether this refactor was a clean mechanical move or a landmine of silently-neutered tests — decided *before* moving a single function, per a second-opinion review, rather than discovered after the fact.
+- **Rule**: "pytest is green" is necessary but not sufficient evidence a mock-heavy refactor is safe — deliberately break the thing the mocks are supposed to intercept and confirm the tests still pass (proving they mock it), then revert.
+- **Why**: a broken patch target produces the exact same "all green" output as a correct one; only forcing the real code path to fail (and confirming tests don't fail with it) distinguishes the two.
+
 ## 2026-09-17: synced-scope skip, gist auto-discovery, marketplace-source capture, upload overwrite (Issues #9, #10, #11)
 
 ### Problem

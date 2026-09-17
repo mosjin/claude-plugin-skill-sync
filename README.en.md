@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-success)](#requirements)
-[![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen)](#tests)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)](#cross-platform)
 
 [中文](README.md)
@@ -54,7 +54,8 @@ surfaced (not managed) via [`doctor`](#commands).
 | **`apply` defaults to dry-run** | Preview only unless `-y`; `-y` also requires `--scope` |
 | **Works on a fresh machine** | Snapshots record each plugin's marketplace source (GitHub repo / git url) too — `apply -y` runs `marketplace add` for you |
 | **Never guesses installs** | Plugins with no source on record (e.g. a marketplace added from a local path) are listed and skipped, **not force-installed** |
-| **221 tests** | All mocked — real plugins are never touched during testing |
+| **222 tests** | All mocked — real plugins are never touched during testing |
+| **Modular internals** | Implementation lives in the `plugin_sync/` package, split by domain (claude_cli/snapshots/marketplaces/merge/gist/apply) — `plugin_manager.py` is just the entry-point shim |
 
 ## Quick Start (beginner-friendly)
 
@@ -340,7 +341,7 @@ python bootstrap_tools.py --check  # report status only, install nothing
 python -m pytest tests/ -v
 ```
 
-221 tests, all subprocess calls mocked — no real plugins are modified during testing.
+222 tests, all subprocess calls mocked — no real plugins are modified during testing.
 
 ## Cross-platform
 

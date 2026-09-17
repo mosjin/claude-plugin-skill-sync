@@ -28,8 +28,8 @@
 - **Verified by**: me, reading CLI help directly.
 - **Invalidated by**: a `gh` CLI update changing gist defaults or the clone command's shape.
 
-### plugin_manager.py test suite is green at 221 tests as of the upload-overwrite feature
-- **Fact**: `python -m pytest tests/ -q` → 221 passed, 0 failed (170 at commit `4e3b19e`, +7 synced-scope skip fix, +10 gist-list/auto-discovery, +25 marketplace source capture/merge/apply auto-add, +9 upload overwrite/--keep-history).
+### plugin_manager.py test suite is green at 222 tests as of the plugin_sync modularization (PR #12)
+- **Fact**: `python -m pytest tests/ -q` → 222 passed, 0 failed (170 at commit `4e3b19e`, +7 synced-scope skip fix, +10 gist-list/auto-discovery, +25 marketplace source capture/merge/apply auto-add, +9 upload overwrite/--keep-history, +1 LANG_MESSAGES en/zh key-parity test added during the modularization). Independently re-verified after merging PR #12 to `main`, plus a break-test on `claude_cli.run_claude` (temporarily raised, confirmed all 221 other tests still pass, reverted) to prove `unittest.mock.patch("plugin_sync.claude_cli.run_claude")` genuinely intercepts post-refactor.
 - **Verified on**: 2026-09-17
 - **Evidence**: local pytest run output in this session.
 - **Verified by**: me, running the suite directly.
